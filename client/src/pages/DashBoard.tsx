@@ -8,9 +8,7 @@ import BoomIcon from "@/components/icons/boom";
 import mockDataJson from "@/../mock.json";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import type { MockData } from "@/types/dashboard";
-import PoolDataDisplay, { type PoolData } from "@/components/pool/poolsTable";
-import useSWR from "swr"
-import { apiGet } from "@/lib/api";
+
 const mockData = mockDataJson as MockData;
 
 // Icon mapping
@@ -21,13 +19,8 @@ const iconMap = {
 };
 
 export default function DashboardOverview() {
-  const { data, error, isLoading } = useSWR<PoolData[]>(
-    "/pools",              // this gets prefixed with API_BASE
-    apiGet                 // will call apiGet<PoolData[]>("/pools")
-  )
-
-  if (error) return <div>Failed to load ❌</div>
-  if (isLoading) return <div>Loading...</div>
+ 
+  
   return (
     <DashboardPageLayout
       header={{
@@ -51,9 +44,7 @@ export default function DashboardOverview() {
         ))}
       </div>
 
-      <div className="mb-6">
-        <PoolDataDisplay pools={data} />
-      </div>
+  
 
       {/* Main 2-column grid section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">

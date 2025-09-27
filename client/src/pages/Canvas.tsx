@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
-import { ReactiveWorkflowManager } from "@/lib/workflowManager";
+import { useCallback, useState } from "react";
 
 import {
   ReactFlow,
@@ -59,183 +58,19 @@ export default function Canvas() {
     const [workflowResults, setWorkflowResults] = useState<Record<string, unknown>>({});
     const [isWorkflowRunning, setIsWorkflowRunning] = useState(false);
     
-    // Reactive workflow state
-    const [reactiveWorkflowManager, setReactiveWorkflowManager] = useState<ReactiveWorkflowManager | null>(null);
-    const [isReactiveMode, setIsReactiveMode] = useState(false);
-    const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
-
-    // Initialize reactive workflow manager
-      useEffect(() => {
-        const manager = new ReactiveWorkflowManager(
-          // Node update callback
-          (nodeId, data) => {
-            setNodes((prevNodes) =>
-              prevNodes.map((node) =>
-                node.id === nodeId ? { ...node, data } : node
-              )
-            );
-          },
-          // Workflow result callback
-          (workflowId, result) => {
-            setWorkflowResults((prev) => ({
-              ...prev,
-              [`${workflowId}-${Date.now()}`]: result, // Add timestamp to avoid conflicts
-            }));
-          }
-        );
-        setReactiveWorkflowManager(manager);
-    
-        return () => {
-          // Cleanup on unmount
-          if (activeWorkflowId) {
-            manager.stopWorkflow(activeWorkflowId);
-          }
-        };
-      }, []);
-    
-      // Check if workflow has trigger nodes
-      const hasTriggerNodes = useCallback(() => {
-        return nodes.some(node => 
-          ['telegram-polling', 'webhook', 'interval'].includes(node.type || '')
-        );
-      }, [nodes]);
-    
-      // Start reactive workflow
-      const startReactiveWorkflow = useCallback(() => {
-        if (!reactiveWorkflowManager || isReactiveMode) return;
-    
-        const workflowId = `reactive-workflow-${Date.now()}`;
-        reactiveWorkflowManager.startWorkflow(workflowId, nodes, edges);
-        setIsReactiveMode(true);
-        setActiveWorkflowId(workflowId);
-        
-        console.log('Started reactive workflow:', workflowId);
-      }, [nodes, edges, reactiveWorkflowManager, isReactiveMode]);
-    
-      // Stop reactive workflow
-      const stopReactiveWorkflow = useCallback(() => {
-        if (!reactiveWorkflowManager || !activeWorkflowId) return;
-    
-        reactiveWorkflowManager.stopWorkflow(activeWorkflowId);
-        setIsReactiveMode(false);
-        setActiveWorkflowId(null);
-        
-        // Reset all trigger nodes to idle
-        setNodes((prevNodes) =>
-          prevNodes.map((node) => {
-            if (['telegram-polling', 'webhook', 'interval'].includes(node.type || '')) {
-              return {
-                ...node,
-                data: {
-                  ...node.data,
-                  status: 'idle' as NodeStatus,
-                  isActive: false,
-                },
-              };
-            }
-            return node;
-          })
-        );
-        
-        console.log('Stopped reactive workflow:', activeWorkflowId);
-      }, [reactiveWorkflowManager, activeWorkflowId, setNodes]);
-    
-      // Handle trigger node start/stop
-      const handleTriggerStart = useCallback((nodeId: string, config: any) => {
-        setNodes((prevNodes) =>
-          prevNodes.map((node) =>
-            node.id === nodeId
-              ? {
-                  ...node,
-                  data: {
-                    ...node.data,
-                    ...config,
-                    isActive: true,
-                    status: 'running' as NodeStatus,
-                  },
-                }
-              : node
-          )
-        );
-      }, [setNodes]);
-    
-      const handleTriggerStop = useCallback((nodeId: string) => {
-        if (reactiveWorkflowManager) {
-          reactiveWorkflowManager.stopTriggerNode(nodeId);
-        }
-    
-        setNodes((prevNodes) =>
-          prevNodes.map((node) =>
-            node.id === nodeId
-              ? {
-                  ...node,
-                  data: {
-                    ...node.data,
-                    isActive: false,
-                    status: 'idle' as NodeStatus,
-                  },
-                }
-              : node
-          )
-        );
-      }, [reactiveWorkflowManager, setNodes]);
-    
-      const handleTestExecution = useCallback(async (nodeId: string, question: string) => {
-        const node = nodes.find(n => n.id === nodeId);
-        if (!node) return;
-    
-        try {
-          updateNodeStatus(nodeId, "running");
-          const result = await nodeFunctions.agent({ question });
-          updateNodeStatus(nodeId, "success", result);
-          setWorkflowResults(prev => ({
-            ...prev,
-            [nodeId]: result
-          }));
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          updateNodeStatus(nodeId, "error", null, errorMessage);
-        }
-      }, [nodes]);
-    
-      const addNode = (type: string) => {
+    const addNode = (type: string) => {
         const baseData = {
           label: `${type.charAt(0).toUpperCase() + type.slice(1)} Node`,
           status: "idle" as NodeStatus,
           result: null,
-          run: nodeFunctions[type],
+          error: null,
         };
-    
-        // Add specific data for different node types
-        let nodeData = baseData;
-        
-        if (type === "test") {
-          nodeData = {
-            ...baseData,
-            question: "",
-            onExecuteTest: handleTestExecution,
-          };
-        } else if (type === "telegram-polling") {
-          nodeData = {
-            ...baseData,
-            botToken: "",
-            isActive: false,
-            onStart: handleTriggerStart,
-            onStop: handleTriggerStop,
-          };
-        } else if (type === "webhook") {
-          nodeData = {
-            ...baseData,
-            webhookUrl: "",
-            isActive: false,
-          };
-        }
     
         const newNode: Node = {
           id: `${id++}`,
           type,
           position: { x: Math.random() * 400 + 100, y: Math.random() * 200 + 100 },
-          data: nodeData,
+          data: baseData,
         };
         
         setNodes((nds) => [...nds, newNode]);
