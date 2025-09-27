@@ -460,6 +460,20 @@ contract LeverageController is ReentrancyGuard, Ownable {
     }
 
     /**
+     * @notice Authorize platform for AssetManager integration
+     */
+    function authorizePlatform(address platform) external onlyOwner {
+        authorizedPlatforms[platform] = true;
+    }
+
+    /**
+     * @notice Revoke platform authorization
+     */
+    function revokePlatform(address platform) external onlyOwner {
+        authorizedPlatforms[platform] = false;
+    }
+
+    /**
      * @notice Set price oracle manager
      */
     function setPriceOracleManager(address newManager) external onlyOwner {

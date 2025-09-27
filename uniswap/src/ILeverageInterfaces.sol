@@ -123,4 +123,72 @@ interface IInstantLeverageHook {
         PoolKey calldata poolKey,
         InstantLeverageRequest memory request
     ) external returns (uint256 outputAmount, uint256 openPrice);
+
+    function borrowFromPool(
+        PoolKey calldata poolKey,
+        address token,
+        uint256 amount
+    ) external returns (uint256 borrowed);
+
+    function repayToPool(
+        PoolKey calldata poolKey,
+        address token,
+        uint256 amount
+    ) external;
+}
+
+// ============ Cross-Pool Asset Manager Interface ============
+
+interface ICrossPoolAssetManager {
+    struct CrossPoolTradeParams {
+        address user;
+        address userWallet;
+        PoolKey borrowPool;      // Pool A/B
+        PoolKey tradingPool;     // Pool B/C
+        address tokenA;          // Collateral token
+        address tokenB;          // Bridge token
+        address tokenC;          // Target token
+        uint256 collateralAmount;
+        uint256 leverage;
+        uint256 minTokenCAmount;
+        uint256 deadline;
+    }
+
+    struct CrossPoolPosition {
+        bytes32 positionId;
+        address user;
+        address userWallet;
+        PoolKey borrowPool;
+        PoolKey tradingPool;
+        address tokenA;
+        address tokenB;
+        address tokenC;
+        uint256 collateralAmount;
+        uint256 borrowedTokenB;
+        uint256 tokenCHolding;
+        uint256 leverage;
+        uint256 openPrice;
+        uint256 openTimestamp;
+        bool isActive;
+    }
+
+    function executeCrossPoolTrade(
+        CrossPoolTradeParams memory params
+    ) external returns (bytes32 positionId);
+
+    function closeCrossPoolPosition(
+        bytes32 positionId
+    ) external returns (uint256 userProceeds);
+
+    function getCrossPoolPositionHealth(
+        bytes32 positionId
+    ) external view returns (
+        uint256 currentValue,
+        uint256 liquidationThreshold,
+        bool isHealthy,
+        int256 pnl
+    );
+
+    function getUserCrossPoolPositions(address user) external view returns (bytes32[] memory);
+    function getCrossPoolPosition(bytes32 positionId) external view returns (CrossPoolPosition memory);
 }

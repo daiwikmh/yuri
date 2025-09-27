@@ -33,3 +33,78 @@ token:
 		--private-key $(PRIVATE_KEY) \
 		--broadcast
 
+# ============================================================================
+# CROSS-POOL LEVERAGE SYSTEM - ASSET MANAGER
+# ============================================================================
+
+# Deploy AssetManager for cross-pool leverage
+deploy-asset-manager:
+	@echo "=== Deploying AssetManager for Cross-Pool Leverage ==="
+	forge script script/DeployAssetManager.s.sol:DeployAssetManager \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
+
+# Setup cross-pool leverage trading
+setup-cross-pool:
+	@echo "=== Setting up Cross-Pool Leverage Trading ==="
+	forge script script/CrossPoolLeverageTrading.s.sol:CrossPoolLeverageTrading \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
+
+# Execute cross-pool leverage trade (usage: make cross-pool-trade AMOUNT=100 LEVERAGE=5)
+cross-pool-trade:
+	@echo "=== Executing Cross-Pool Leverage Trade: $(AMOUNT) Token A with $(LEVERAGE)x leverage ==="
+	forge script script/CrossPoolLeverageTrading.s.sol:CrossPoolLeverageTrading \
+		--sig "executeCrossPoolTrade(uint256,uint8)" $(shell echo "$(AMOUNT) * 10^18" | bc) $(LEVERAGE) \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
+
+# Check cross-pool position health (usage: make check-cross-pool-position POSITION_ID=0x...)
+check-cross-pool-position:
+	@echo "=== Checking Cross-Pool Position Health ==="
+	forge script script/CrossPoolLeverageTrading.s.sol:CrossPoolLeverageTrading \
+		--sig "checkCrossPoolPosition(bytes32)" $(POSITION_ID) \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY)
+
+# Close cross-pool position (usage: make close-cross-pool-position POSITION_ID=0x...)
+close-cross-pool-position:
+	@echo "=== Closing Cross-Pool Position ==="
+	forge script script/CrossPoolLeverageTrading.s.sol:CrossPoolLeverageTrading \
+		--sig "closeCrossPoolPosition(bytes32)" $(POSITION_ID) \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
+
+# Check cross-pool system status
+check-cross-pool-status:
+	@echo "=== Checking Cross-Pool System Status ==="
+	forge script script/CrossPoolLeverageTrading.s.sol:CrossPoolLeverageTrading \
+		--sig "getCrossPoolSystemStatus()" \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY)
+
+help:
+	@echo "=========================================="
+	@echo "UNISWAP V4 LEVERAGE TRADING - MAKEFILE HELP"
+	@echo "=========================================="
+	@echo ""
+	@echo "🚀 DEPLOYMENT:"
+	@echo "make deploy-lev          -> Deploy leverage trading system"
+	@echo "make create-pool         -> Configure pools for leverage"
+	@echo "make deploy-asset-manager-> Deploy AssetManager for cross-pool"
+	@echo ""
+	@echo "🌉 CROSS-POOL LEVERAGE:"
+	@echo "make setup-cross-pool    -> Setup cross-pool leverage trading"
+	@echo "make cross-pool-trade AMOUNT=100 LEVERAGE=5 -> Execute A→C leverage via A/B+B/C pools"
+	@echo "make check-cross-pool-position POSITION_ID=0x... -> Check position health"
+	@echo "make close-cross-pool-position POSITION_ID=0x... -> Close cross-pool position"
+	@echo "make check-cross-pool-status -> Check system status"
+	@echo ""
+	@echo "🛠️ UTILITIES:"
+	@echo "make token              -> Deploy test tokens"
+	@echo "make check-compile      -> Check contract compilation"
+

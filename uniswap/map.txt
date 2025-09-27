@@ -32,3 +32,12 @@ Leverage System Deployment Setup ===
   WalletFactory: 0xA78f2b8E27E7048Cb2D2c4AC679819989aE98134
   InstantLeverageHook: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
   LeverageController: 0xdD55A04AdFD14122c92C0d92D37137fD414E9d1a
+
+
+
+
+  === Deployment Summary ===
+  AssetManager: 0xA9B17248F66B916f13FBB19CEd39E6036B1910D2
+  LeverageController: 0xdD55A04AdFD14122c92C0d92D37137fD414E9d1a
+  InstantLeverageHook: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
+  PoolManager: 0x00B036B58a818B1BC34d502D3fE730Db729e62AC
