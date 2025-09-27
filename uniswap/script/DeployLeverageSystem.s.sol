@@ -22,7 +22,7 @@ contract DeployLeverageSystem is Script {
     address internal protocolOwner;
     
     // Contracts to deploy
-    PoolManager public poolManager;
+    IPoolManager public poolManager;
     UserWallet public userWalletTemplate;
     WalletFactory public walletFactory;
     InstantLeverageHook public leverageHook;
@@ -49,7 +49,9 @@ contract DeployLeverageSystem is Script {
 
         // 1. Deploy PoolManager
         console.log("1. Deploying PoolManager...");
-        poolManager = new PoolManager(protocolOwner);
+
+        PoolManager newPoolManager = new PoolManager(protocolOwner);
+        poolManager = IPoolManager(address(newPoolManager));
         console.log("   PoolManager deployed at:", address(poolManager));
 
         // 2. Deploy UserWallet template
@@ -75,7 +77,9 @@ contract DeployLeverageSystem is Script {
 
         bytes memory constructorArgs = abi.encode(
             address(poolManager),
-            address(walletFactory)
+            address(walletFactory),
+            address(0), // leverageController (set later)
+            deployer    // poolFeeRecipient
         );
         
         (address hookAddress, bytes32 salt) = HookMiner.find(
@@ -98,7 +102,9 @@ contract DeployLeverageSystem is Script {
         console.log("5. Deploying InstantLeverageHook...");
         leverageHook = new InstantLeverageHook{salt: salt}(
             IPoolManager(address(poolManager)),
-            address(walletFactory)
+            address(walletFactory),
+            address(0), // leverageController (set later)
+            deployer    // poolFeeRecipient
         );
         console.log("   InstantLeverageHook deployed at:", address(leverageHook));
 
@@ -111,7 +117,7 @@ contract DeployLeverageSystem is Script {
         // 6. Deploy LeverageController
         console.log("6. Deploying LeverageController...");
         leverageController = new LeverageController(
-            address(poolManager),
+            IPoolManager(address(poolManager)),
             address(walletFactory),
             address(leverageHook)
         );
@@ -127,15 +133,24 @@ contract DeployLeverageSystem is Script {
         // Setup TEST0 and TEST1 tokens in WalletFactory
         address TEST0 = 0x5c4B14CB096229226D6D464Cba948F780c02fbb7;
         address TEST1 = 0x70bF7e3c25B46331239fD7427A8DD6E45B03CB4c;
-        
+
         walletFactory.addToken(address(0)); // ETH
         walletFactory.addToken(TEST0);
         walletFactory.addToken(TEST1);
         console.log("   Added ETH, TEST0, TEST1 to WalletFactory");
 
+        // Set leverage hook in controller
+        leverageController.setLeverageHook(address(leverageHook));
+        console.log("   Set leverage hook in controller");
+
         vm.stopBroadcast();
 
-        // 8. Save deployment addresses
+        // 8. Configure initial pool for leverage trading (if needed)
+        console.log("8. Pool configuration ready (configure manually after deployment)");
+        console.log("   Use LeverageController.configurePool() to enable leverage on specific pools");
+        console.log("   Example: configurePool(poolKey, true, 5, 8000, 500) for 5x leverage, 80% utilization");
+
+        // 9. Save deployment addresses
         _saveAddresses();
 
         console.log("=== Leverage System Deployment Complete ===");
@@ -152,8 +167,8 @@ contract DeployLeverageSystem is Script {
             "LEVERAGE_CONTROLLER_ADDRESS=", vm.toString(address(leverageController)), "\n"
         );
 
-        vm.writeFile("./deployed-addresses.env", addresses);
-        console.log("   Addresses saved to deployed-addresses.env");
+        vm.writeFile("deployed-addresses.env", addresses);
+        console.log("   Contract addresses saved to deployed-addresses.env");
     }
 
     function _printDeploymentSummary() internal view {
@@ -164,9 +179,23 @@ contract DeployLeverageSystem is Script {
         console.log("InstantLeverageHook:", address(leverageHook));
         console.log("LeverageController:", address(leverageController));
         console.log("==========================================");
-        console.log("Next steps:");
-        console.log("1. Configure pools in LeverageController");
-        console.log("2. Add more tokens to WalletFactory whitelist");
-        console.log("3. Set up price oracles for liquidations");
+        console.log(" Deployment successful! Next steps:");
+        console.log("1. Copy addresses to .env file from deployed-addresses.env");
+        console.log("2. Run: forge script script/ConfigurePools.s.sol --broadcast --rpc-url $RPC_URL");
+        console.log("3. Optional: Add more tokens via walletFactory.addToken(tokenAddress)");
+        console.log("");
+        console.log("Cross-Pool Leverage Trading Flow:");
+        console.log("- TokenA/TokenB pool: Source of leverage");
+        console.log("- TokenB/TokenC pool: Target trading pool");
+        console.log("- Hook holds TokenC for users (users never control TokenC directly)");
+        console.log("- Position closure: TokenC -> TokenB -> TokenA for pool repayment");
+        console.log("");
+        console.log("Important contract interactions:");
+        console.log("- Users create wallets: walletFactory.createUserAccount()");
+        console.log("- Users deposit funds: walletFactory.depositFunds(token, amount)");
+        console.log("- Execute leverage: leverageController.requestLeverageTrade(poolKey, tokenA, tokenB, tokenC, ...)");
+        console.log("- Close positions: leverageController.closeLeveragePosition(requestId, currentPrice)");
+        console.log("");
+        console.log(" Remember to configure pools before trading!");
     }
 }

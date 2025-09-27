@@ -3,15 +3,12 @@ pragma solidity ^0.8.24;
 
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
 import {Currency} from "v4-core/types/Currency.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import "./ILeverageInterfaces.sol";
-
-
 
 /**
  * @title LeverageController
@@ -21,29 +18,25 @@ import "./ILeverageInterfaces.sol";
 contract LeverageController is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    // ============ Interfaces ============
-    
-  
     // ============ State Variables ============
-    
-    IPoolManager public immutable poolManager;
     IWalletFactory public immutable walletFactory;
-    IInstantLeverageHook public immutable leverageHook;
-    
+    IInstantLeverageHook public leverageHook;
+    IPoolManager public immutable poolManager;
+
     uint256 public nextRequestId = 1;
     mapping(bytes32 => TradeRequest) public tradeRequests;
     mapping(bytes32 => bool) public executedTrades;
-    
+    mapping(address => bool) public authorizedPlatforms;
+
     // Pool and platform configuration
     mapping(bytes32 => PoolConfig) public poolConfigs;
-    mapping(address => address) public priceOracles; // token -> oracle
-    
+    mapping(address => address) public priceOracles;
+
     uint256 public maxLeverageGlobal = 10;
     bool public emergencyPaused;
     address public priceOracleManager;
 
     // ============ Structs ============
-    
     struct TradeRequest {
         address user;
         address userWallet;
@@ -57,7 +50,7 @@ contract LeverageController is ReentrancyGuard, Ownable {
         uint256 requestTimestamp;
         bool executed;
     }
-    
+
     struct PoolConfig {
         bool active;
         uint256 maxLeverageForPool;
@@ -66,7 +59,6 @@ contract LeverageController is ReentrancyGuard, Ownable {
     }
 
     // ============ Events ============
-    
     event TradeRequested(
         bytes32 indexed requestId,
         address indexed user,
@@ -76,14 +68,14 @@ contract LeverageController is ReentrancyGuard, Ownable {
         uint256 leverage,
         uint256 deadline
     );
-    
+
     event TradeExecuted(
         bytes32 indexed requestId,
         address indexed user,
         uint256 outputAmount,
         uint256 openPrice
     );
-    
+
     event PositionClosed(
         bytes32 indexed requestId,
         address indexed user,
@@ -91,13 +83,13 @@ contract LeverageController is ReentrancyGuard, Ownable {
         int256 pnl,
         uint256 userProceeds
     );
-    
+
     event PositionLiquidated(
         bytes32 indexed requestId,
         address indexed user,
         uint256 liquidationValue
     );
-    
+
     event PoolConfigured(
         bytes32 indexed poolId,
         bool active,
@@ -105,103 +97,84 @@ contract LeverageController is ReentrancyGuard, Ownable {
     );
 
     // ============ Modifiers ============
-    
     modifier notPaused() {
         require(!emergencyPaused, "Controller: Emergency paused");
         _;
     }
-    
+
     modifier validPool(PoolKey calldata poolKey) {
         bytes32 poolId = _getPoolId(poolKey);
         require(poolConfigs[poolId].active, "Controller: Pool not active");
         _;
     }
-    
+
     modifier onlyPriceOracle() {
         require(msg.sender == priceOracleManager, "Controller: Only price oracle");
         _;
     }
 
     // ============ Constructor ============
-    
     constructor(
-        address _poolManager,
+        IPoolManager _poolManager,
         address _walletFactory,
         address _leverageHook
     ) Ownable(msg.sender) {
-        poolManager = IPoolManager(_poolManager);
+        poolManager = _poolManager;
         walletFactory = IWalletFactory(_walletFactory);
         leverageHook = IInstantLeverageHook(_leverageHook);
+        authorizedPlatforms[_walletFactory] = true;
     }
 
     // ============ Core Trading Functions ============
-    
+
     /**
      * @notice Request a leverage trade
      */
     function requestLeverageTrade(
-        PoolKey calldata poolKey,
-        address tokenIn,
-        address tokenOut,
-        uint256 baseAmount,
-        uint256 leverageMultiplier,
-        uint256 minOutputAmount,
-        bytes32 delegationHash,
-        uint256 deadline
-    ) external notPaused validPool(poolKey) returns (bytes32 requestId) {
-        
-        // Validate basic parameters
-        require(block.timestamp <= deadline, "Controller: Deadline passed");
-        require(leverageMultiplier >= 2 && leverageMultiplier <= maxLeverageGlobal, "Controller: Invalid leverage");
-        require(baseAmount > 0, "Controller: Invalid amount");
-        
-        // Get and validate user wallet
+        ILeverageController.TradeRequestParams calldata params
+    ) external notPaused validPool(params.poolKey) returns (bytes32 requestId) {
+        require(block.timestamp <= params.deadline, "Controller: Deadline passed");
+        require(
+            params.leverageMultiplier >= 2 && params.leverageMultiplier <= maxLeverageGlobal,
+            "Controller: Invalid leverage"
+        );
+        require(params.baseAmount > 0, "Controller: Invalid amount");
+
         (address payable userWallet, bool exists,) = walletFactory.userAccounts(msg.sender);
         require(exists, "Controller: No wallet found");
         require(userWallet != address(0), "Controller: Invalid wallet");
-        
-        // Validate user has funds and delegation
-        require(_validateUserCapacity(userWallet, tokenIn, baseAmount, delegationHash), "Controller: Insufficient capacity");
-        
-        // Validate tokens are whitelisted
-        require(walletFactory.allowedTokens(tokenIn), "Controller: TokenIn not allowed");
-        require(walletFactory.allowedTokens(tokenOut), "Controller: TokenOut not allowed");
-        
-        // Validate pool-specific limits
-        bytes32 poolId = _getPoolId(poolKey);
-        require(leverageMultiplier <= poolConfigs[poolId].maxLeverageForPool, "Controller: Exceeds pool leverage limit");
-        
-        // Generate request ID
+
+        require(_validateTradeParams(userWallet, params), "Controller: Invalid trade parameters");
+
         requestId = keccak256(abi.encodePacked(msg.sender, block.timestamp, nextRequestId++));
-        
-        // Store trade request
+
         tradeRequests[requestId] = TradeRequest({
             user: msg.sender,
             userWallet: userWallet,
-            tokenIn: tokenIn,
-            tokenOut: tokenOut,
-            baseAmount: baseAmount,
-            leverageMultiplier: leverageMultiplier,
-            minOutputAmount: minOutputAmount,
-            delegationHash: delegationHash,
-            deadline: deadline,
+            tokenIn: params.tokenIn,
+            tokenOut: params.tokenOut,
+            baseAmount: params.baseAmount,
+            leverageMultiplier: params.leverageMultiplier,
+            minOutputAmount: params.minOutputAmount,
+            delegationHash: params.delegationHash,
+            deadline: params.deadline,
             requestTimestamp: block.timestamp,
             executed: false
         });
-        
+
         emit TradeRequested(
             requestId,
             msg.sender,
-            tokenIn,
-            tokenOut,
-            baseAmount,
-            leverageMultiplier,
-            deadline
+            params.tokenIn,
+            params.tokenOut,
+            params.baseAmount,
+            params.leverageMultiplier,
+            params.deadline
         );
-        
+
         return requestId;
     }
-    
+
     /**
      * @notice Execute a leverage trade
      */
@@ -209,108 +182,42 @@ contract LeverageController is ReentrancyGuard, Ownable {
         bytes32 requestId,
         PoolKey calldata poolKey
     ) external nonReentrant notPaused returns (bool success) {
-        
         TradeRequest storage request = tradeRequests[requestId];
-        
-        // Validate execution conditions
         require(!request.executed, "Controller: Already executed");
         require(block.timestamp <= request.deadline, "Controller: Request expired");
         require(request.user != address(0), "Controller: Invalid request");
-        
-        // Mark as executed
+
         request.executed = true;
         executedTrades[requestId] = true;
-        
-        try this._executeTradeInternal(requestId, poolKey) returns (uint256 outputAmount, uint256 openPrice) {
-            
+
+        // Create leverage request for hook
+        InstantLeverageRequest memory leverageRequest = InstantLeverageRequest({
+            requestId: requestId,
+            user: request.user,
+            userWallet: request.userWallet,
+            tokenIn: request.tokenIn,
+            tokenOut: request.tokenOut,
+            userBaseAmount: request.baseAmount,
+            leverageMultiplier: request.leverageMultiplier,
+            minOutputAmount: request.minOutputAmount,
+            targetPoolKey: poolKey
+        });
+
+        try leverageHook.executeLeverageTrade(poolKey, leverageRequest) returns (
+            uint256 outputAmount,
+            uint256 openPrice
+        ) {
             emit TradeExecuted(requestId, request.user, outputAmount, openPrice);
             return true;
-            
         } catch Error(string memory reason) {
-            
-            // Revert execution state on failure
             request.executed = false;
             executedTrades[requestId] = false;
-            
             revert(string(abi.encodePacked("Controller: Trade failed - ", reason)));
         }
     }
-    
-    /**
-     * @notice Internal trade execution (external for try-catch)
-     */
-    function _executeTradeInternal(
-        bytes32 requestId,
-        PoolKey calldata poolKey
-    ) external returns (uint256 outputAmount, uint256 openPrice) {
-        require(msg.sender == address(this), "Controller: Internal only");
-        
-        TradeRequest memory request = tradeRequests[requestId];
-        
-        // Prepare hook data for leverage execution
-        bytes memory hookData = abi.encode(
-            request.user,
-            request.userWallet,
-            request.tokenIn,
-            request.tokenOut,
-            request.baseAmount,
-            request.leverageMultiplier,
-            request.minOutputAmount,
-            request.delegationHash,
-            requestId
-        );
-        
-        // Execute trade through user wallet (respects delegation)
-        bytes memory tradeCalldata = abi.encodeWithSelector(
-            this.executeViaHook.selector,
-            poolKey,
-            hookData,
-            requestId
-        );
-        
-        // Use user's wallet to execute trade
-        IUserWallet(request.userWallet).executeTrade(
-            request.tokenIn,
-            request.baseAmount,
-            tradeCalldata,
-            request.delegationHash
-        );
-        
-        // Get position details from hook (after execution)
-        IInstantLeverageHook.LeveragePosition memory position = leverageHook.leveragePositions(requestId);
-        
-        return (position.initialNotional, position.openPrice);
-    }
-    
-    /**
-     * @notice Execute trade via leverage hook
-     */
-    function executeViaHook(
-        PoolKey calldata poolKey,
-        bytes calldata hookData,
-        bytes32 requestId
-    ) external returns (bool) {
-        
-        // Verify this is called by a user wallet during trade execution
-        TradeRequest memory request = tradeRequests[requestId];
-        require(msg.sender == request.userWallet, "Controller: Only user wallet");
-        
-        // Execute through pool manager with hook
-        ModifyLiquidityParams memory params = ModifyLiquidityParams({
-            tickLower: -887220,  // Full range
-            tickUpper: 887220,
-            liquidityDelta: -int256(request.baseAmount * request.leverageMultiplier), // Negative = remove/borrow
-            salt: 0
-        });
-        
-        // This triggers the leverage hook
-        poolManager.modifyLiquidity(poolKey, params, hookData);
-        
-        return true;
-    }
 
     // ============ Position Management ============
-    
+
     /**
      * @notice Close a leverage position
      */
@@ -318,28 +225,30 @@ contract LeverageController is ReentrancyGuard, Ownable {
         bytes32 requestId,
         PoolKey calldata poolKey
     ) external nonReentrant notPaused returns (bool success) {
-        
-        // Verify position ownership
         TradeRequest memory request = tradeRequests[requestId];
         require(request.user == msg.sender, "Controller: Not position owner");
         require(executedTrades[requestId], "Controller: Position not open");
-        
-        // Get current price from pool
-        uint256 currentPrice = leverageHook.getPoolPrice(poolKey);
-        
-        // Close through hook (handles profit/loss distribution)
-        success = leverageHook.closeLeveragePosition(requestId, currentPrice);
-        
+
+        IInstantLeverageHook.ClosePositionParams memory params = IInstantLeverageHook.ClosePositionParams({
+            requestId: requestId,
+            poolKey: poolKey
+        });
+
+        success = leverageHook.closeLeveragePosition(params);
         if (success) {
-            // Mark as closed
-            executedTrades[requestId] = false;
-            
-            emit PositionClosed(requestId, request.user, currentPrice, 0, 0);
+            delete executedTrades[requestId];
+
+            IInstantLeverageHook.LeveragePosition memory position = leverageHook.getPosition(requestId);
+            uint256 currentPrice = leverageHook.getPoolPrice(poolKey);
+            uint256 currentValue = _calculatePositionValue(position, currentPrice);
+            int256 pnl = int256(currentValue) - int256(position.initialNotional);
+            uint256 userProceeds = pnl > 0 ? position.userContribution + (uint256(pnl) * 9700) / 10000 : 0;
+
+            emit PositionClosed(requestId, msg.sender, currentValue, pnl, userProceeds);
         }
-        
         return success;
     }
-    
+
     /**
      * @notice Check for liquidation (anyone can call)
      */
@@ -347,24 +256,23 @@ contract LeverageController is ReentrancyGuard, Ownable {
         bytes32 requestId,
         PoolKey calldata poolKey
     ) external returns (bool liquidated) {
-        
         require(executedTrades[requestId], "Controller: Position not open");
-        
+
         // Get current price from pool
         uint256 currentPrice = leverageHook.getPoolPrice(poolKey);
-        
+
         liquidated = leverageHook.checkLiquidation(requestId, currentPrice);
-        
+
         if (liquidated) {
             executedTrades[requestId] = false;
-            
+
             TradeRequest memory request = tradeRequests[requestId];
             emit PositionLiquidated(requestId, request.user, currentPrice);
         }
-        
+
         return liquidated;
     }
-    
+
     /**
      * @notice Get position health
      */
@@ -382,18 +290,11 @@ contract LeverageController is ReentrancyGuard, Ownable {
     }
 
     // ============ View Functions ============
-    
-    /**
-     * @notice Get user's active positions (external interface)
-     */
-    function getUserActivePositions(address user) external view returns (bytes32[] memory) {
-        return _getUserActivePositions(user);
-    }
 
     /**
-     * @notice Get user's active positions (internal implementation)
+     * @notice Get user's active positions
      */
-    function _getUserActivePositions(address user) internal view returns (bytes32[] memory activePositions) {
+    function getUserActivePositions(address user) external view returns (bytes32[] memory activePositions) {
         bytes32[] memory allPositions = leverageHook.getUserPositions(user);
 
         // Filter for active positions
@@ -415,7 +316,7 @@ contract LeverageController is ReentrancyGuard, Ownable {
 
         return activePositions;
     }
-    
+
     /**
      * @notice Check if user can execute leverage trade
      */
@@ -427,34 +328,51 @@ contract LeverageController is ReentrancyGuard, Ownable {
         uint256 leverageMultiplier,
         bytes32 delegationHash
     ) external view returns (bool canExecute, string memory reason) {
-        
-        // Check if pool is active
         bytes32 poolId = _getPoolId(poolKey);
-        if (!poolConfigs[poolId].active) {
-            return (false, "Pool not active");
-        }
-        
-        // Check leverage limits
-        if (leverageMultiplier > poolConfigs[poolId].maxLeverageForPool) {
-            return (false, "Exceeds pool leverage limit");
-        }
-        
-        // Check user wallet
+        if (!poolConfigs[poolId].active) return (false, "Pool not active");
+        if (leverageMultiplier > poolConfigs[poolId].maxLeverageForPool) return (false, "Exceeds limit");
+
         (address payable userWallet, bool exists,) = walletFactory.userAccounts(user);
-        if (!exists) {
-            return (false, "No wallet found");
-        }
-        
-        // Check capacity
-        if (!_validateUserCapacity(userWallet, tokenIn, baseAmount, delegationHash)) {
-            return (false, "Insufficient capacity");
-        }
-        
+        if (!exists) return (false, "No wallet");
+        if (!_validateUserCapacity(userWallet, tokenIn, baseAmount, delegationHash)) return (false, "Insufficient capacity");
+
         return (true, "");
     }
 
     // ============ Internal Functions ============
-    
+
+    /**
+     * @notice Validate trade parameters
+     */
+    function _validateTradeParams(
+        address userWallet,
+        ILeverageController.TradeRequestParams calldata params
+    ) internal view returns (bool) {
+        // Check wallet balance
+        if (IUserWallet(userWallet).balances(params.tokenIn) < params.baseAmount) {
+            return false;
+        }
+
+        // Check delegation
+        (bool active, uint256 maxAmount, uint256 expiry) = IUserWallet(userWallet).delegations(params.delegationHash);
+        if (!active || params.baseAmount > maxAmount || block.timestamp >= expiry) {
+            return false;
+        }
+
+        // Check token allowances
+        if (!walletFactory.allowedTokens(params.tokenIn) || !walletFactory.allowedTokens(params.tokenOut)) {
+            return false;
+        }
+
+        // Check pool-specific leverage limit
+        bytes32 poolId = _getPoolId(params.poolKey);
+        if (params.leverageMultiplier > poolConfigs[poolId].maxLeverageForPool) {
+            return false;
+        }
+
+        return true;
+    }
+
     /**
      * @notice Validate user has sufficient funds and delegation
      */
@@ -464,21 +382,20 @@ contract LeverageController is ReentrancyGuard, Ownable {
         uint256 amount,
         bytes32 delegationHash
     ) internal view returns (bool) {
-        
         // Check wallet balance
         if (IUserWallet(userWallet).balances(token) < amount) {
             return false;
         }
-        
+
         // Check delegation
         (bool active, uint256 maxAmount, uint256 expiry) = IUserWallet(userWallet).delegations(delegationHash);
         if (!active || amount > maxAmount || block.timestamp >= expiry) {
             return false;
         }
-        
+
         return true;
     }
-    
+
     /**
      * @notice Generate pool ID
      */
@@ -486,8 +403,18 @@ contract LeverageController is ReentrancyGuard, Ownable {
         return keccak256(abi.encode(key.currency0, key.currency1, key.fee, key.tickSpacing));
     }
 
+    /**
+     * @notice Calculate position value
+     */
+    function _calculatePositionValue(
+        IInstantLeverageHook.LeveragePosition memory position,
+        uint256 currentPrice
+    ) internal pure returns (uint256) {
+        return (position.outputTokenAmount * currentPrice) / position.openPrice;
+    }
+
     // ============ Admin Functions ============
-    
+
     /**
      * @notice Configure pool for leverage trading
      */
@@ -499,17 +426,17 @@ contract LeverageController is ReentrancyGuard, Ownable {
         uint256 baseFeeRate
     ) external onlyOwner {
         bytes32 poolId = _getPoolId(poolKey);
-        
+
         poolConfigs[poolId] = PoolConfig({
             active: active,
             maxLeverageForPool: maxLeverage,
             maxUtilization: maxUtilization,
             baseFeeRate: baseFeeRate
         });
-        
+
         emit PoolConfigured(poolId, active, maxLeverage);
     }
-    
+
     /**
      * @notice Set global leverage limit
      */
@@ -517,14 +444,21 @@ contract LeverageController is ReentrancyGuard, Ownable {
         require(newMax >= 2 && newMax <= 50, "Controller: Invalid leverage range");
         maxLeverageGlobal = newMax;
     }
-    
+
     /**
      * @notice Emergency pause
      */
     function setEmergencyPause(bool paused) external onlyOwner {
         emergencyPaused = paused;
     }
-    
+
+    /**
+     * @notice Set leverage hook
+     */
+    function setLeverageHook(address _leverageHook) external onlyOwner {
+        leverageHook = IInstantLeverageHook(_leverageHook);
+    }
+
     /**
      * @notice Set price oracle manager
      */
@@ -565,11 +499,15 @@ contract LeverageController is ReentrancyGuard, Ownable {
         address user,
         PoolKey calldata poolKey
     ) external onlyOwner {
-        bytes32[] memory positions = _getUserActivePositions(user);
-        uint256 currentPrice = leverageHook.getPoolPrice(poolKey);
+        bytes32[] memory positions = this.getUserActivePositions(user);
 
         for (uint256 i = 0; i < positions.length; i++) {
-            leverageHook.closeLeveragePosition(positions[i], currentPrice);
+            IInstantLeverageHook.ClosePositionParams memory params = IInstantLeverageHook.ClosePositionParams({
+                requestId: positions[i],
+                poolKey: poolKey
+            });
+
+            leverageHook.closeLeveragePosition(params);
             executedTrades[positions[i]] = false;
         }
     }

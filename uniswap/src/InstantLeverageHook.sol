@@ -11,148 +11,103 @@ import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 import {Currency} from "v4-core/types/Currency.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./ILeverageInterfaces.sol";
 
 /**
  * @title InstantLeverageHook
- * @notice Hook for instant leverage trading through temporary pool liquidity
- * @dev Enables users to get leveraged positions without collateral via atomic trades
+ * @notice Uniswap V4 hook for atomic leverage trading execution
+ * @dev Enables borrowing from pools, executing leveraged trades, and immediate repayment
  */
-
-    
-contract InstantLeverageHook is BaseHook {
+contract InstantLeverageHook is BaseHook, Ownable, ReentrancyGuard {
     using StateLibrary for IPoolManager;
+    using SafeERC20 for IERC20;
 
     // ============ Constants ============
-    
-    uint256 public constant MAX_LEVERAGE_MULTIPLIER = 10; // 10x max
-    uint24 public constant DYNAMIC_FEE_FLAG = 0x800000;
-    uint256 public constant POOL_FEE_BPS = 300; // 3% fee to pool on profits
-    uint256 public constant USER_PROFIT_BPS = 9700; // 97% to user on profits
+    uint256 public constant MAX_LEVERAGE_MULTIPLIER = 10;
+    uint256 public constant POOL_FEE_BPS = 300; // 3% pool fee
+    uint256 public constant USER_PROFIT_BPS = 9700; // 97% to user
 
     // ============ State Variables ============
-    
-    address public immutable walletFactory;     // Your WalletFactory contract
-    mapping(bytes32 => PoolInfo) public poolInfo;
+    IWalletFactory public immutable walletFactory;
+    ILeverageController public leverageController;
+    address public poolFeeRecipient;
+
     mapping(address => bool) public authorizedPlatforms;
-    mapping(bytes32 => InstantLeverageRequest) public pendingRequests;
-    mapping(bytes32 => LeveragePosition) public leveragePositions; // requestId -> position
-    mapping(address => bytes32[]) public userPositions; // user -> position IDs
+    mapping(bytes32 => IInstantLeverageHook.LeveragePosition) public leveragePositions;
+    mapping(address => bytes32[]) public userPositions;
+    mapping(bytes32 => uint256) public outputTokenHoldings;
 
-    // ============ Structs ============
-
-    struct InstantLeverageRequest {
-        address user;                // User's EOA
-        address userWallet;          // User's smart wallet address  
-        address tokenIn;             // Base token user is spending
-        address tokenOut;            // Token user wants to receive
-        uint256 userBaseAmount;      // Amount from user's wallet
-        uint256 leverageMultiplier;  // 1-10x leverage
-        uint256 minOutputAmount;     // Slippage protection
-        bytes32 delegationHash;      // Delegation signature hash
-        bytes32 requestId;           // Unique request identifier
-    }
-
-    struct LeveragePosition {
-        address user;
-        address userWallet;
-        address tokenIn;
-        address tokenOut;
-        uint256 initialNotional;     // Total position size (user + leverage)
-        uint256 userContribution;    // User's base amount
-        uint256 leverageAmount;      // Amount borrowed from pool
-        uint256 leverageMultiplier;
-        uint256 openPrice;           // Price at position open
-        uint256 liquidationThreshold; // Position value at which to liquidate
-        uint256 openTimestamp;
-        bool isOpen;
-    }
-
+    // Pool lending info
     struct PoolInfo {
-        uint256 totalLent;           // Total currently lent out
-        uint256 maxLendingLimit;     // Maximum amount pool will lend
-        uint256 utilizationRate;     // Current utilization percentage
-        bool isActive;               // Whether pool accepts leverage requests
+        uint256 totalLent;
+        uint256 maxLendingLimit;
+        uint256 utilizationRate;
+        bool isActive;
     }
+    mapping(bytes32 => PoolInfo) public poolInfo;
 
     // ============ Events ============
-
     event LeveragePositionOpened(
         bytes32 indexed requestId,
         address indexed user,
-        address userWallet,
-        address tokenIn,
         address tokenOut,
-        uint256 userAmount,
-        uint256 leverageAmount,
-        uint256 totalNotional,
-        uint256 liquidationThreshold
+        uint256 outputAmount,
+        uint256 openPrice
     );
 
     event LeveragePositionClosed(
         bytes32 indexed requestId,
         address indexed user,
-        uint256 finalValue,
-        int256 pnl,
-        uint256 userProceeds,
-        uint256 poolFee,
-        string reason
+        uint256 finalValue
     );
 
-    event PositionLiquidated(
+    event LiquidationExecuted(
         bytes32 indexed requestId,
         address indexed user,
-        uint256 liquidationValue,
-        uint256 poolRepayment
-    );
-
-    event PoolUtilizationUpdated(
-        bytes32 indexed poolId,
-        uint256 utilizationRate,
-        uint256 newFee
-    );
-
-    event LeverageRequestFailed(
-        bytes32 indexed requestId,
-        string reason
+        uint256 liquidationPrice
     );
 
     // ============ Modifiers ============
-
     modifier onlyAuthorizedPlatform() {
         require(authorizedPlatforms[msg.sender], "Unauthorized platform");
         _;
     }
 
-    // ============ Constructor ============
+    modifier onlyLeverageController() {
+        require(msg.sender == address(leverageController), "Only leverage controller");
+        _;
+    }
 
+    // ============ Constructor ============
     constructor(
         IPoolManager _poolManager,
-        address _walletFactory
-    ) BaseHook(_poolManager) {
-        walletFactory = _walletFactory;
+        address _walletFactory,
+        address _leverageController,
+        address _poolFeeRecipient
+    ) BaseHook(_poolManager) Ownable(msg.sender) ReentrancyGuard() {
+        walletFactory = IWalletFactory(_walletFactory);
+        leverageController = ILeverageController(_leverageController);
+        poolFeeRecipient = _poolFeeRecipient;
         authorizedPlatforms[_walletFactory] = true;
+        authorizedPlatforms[_leverageController] = true;
     }
 
     // ============ Hook Permissions ============
-
-    function getHookPermissions()
-        public
-        pure
-        override
-        returns (Hooks.Permissions memory)
-    {
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: true,    // Setup pool info
+            afterInitialize: true,
             beforeAddLiquidity: false,
-            beforeRemoveLiquidity: true,  // Handle instant leverage
             afterAddLiquidity: false,
-            afterRemoveLiquidity: true,   // Cleanup and fee updates
-            beforeSwap: true,             // Validate leverage trades
-            afterSwap: true,              // Track pool state
+            beforeRemoveLiquidity: true,
+            afterRemoveLiquidity: true,
+            beforeSwap: true,
+            afterSwap: true,
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
@@ -162,418 +117,347 @@ contract InstantLeverageHook is BaseHook {
         });
     }
 
-    // ============ Hook Implementation ============
-
-    /**
-     * @notice Initialize pool for leverage trading
-     */
-    function _afterInitialize(
-        address sender,
-        PoolKey calldata key,
-        uint160 sqrtPriceX96,
-        int24 tick
-    ) internal override returns (bytes4) {
-        bytes32 poolId = _getPoolId(key);
-
-        // Initialize pool with default leverage settings
-        poolInfo[poolId] = PoolInfo({
-            totalLent: 0,
-            maxLendingLimit: 1000000 ether, // Default 1M limit
-            utilizationRate: 0,
-            isActive: true
-        });
-
-        return BaseHook.afterInitialize.selector;
-    }
-
-    /**
-     * @notice Handle instant leverage requests
-     * @dev Called when platform requests temporary liquidity for user leverage
-     */
-    function _beforeRemoveLiquidity(
-        address sender,
-        PoolKey calldata key,
-        ModifyLiquidityParams calldata params,
-        bytes calldata hookData
-    ) internal override returns (bytes4) {
-
-        // Only process if called by authorized platform with leverage request
-        if (hookData.length > 0 && authorizedPlatforms[sender]) {
-            InstantLeverageRequest memory request = abi.decode(hookData, (InstantLeverageRequest));
-
-            // Validate leverage request
-            require(_validateLeverageRequest(key, request), "Invalid leverage request");
-
-            // Execute instant leverage logic
-            _executeInstantLeverage(key, request, params);
-        }
-
-        return BaseHook.beforeRemoveLiquidity.selector;
-    }
-
-    /**
-     * @notice Complete leverage operation and update pool state
-     */
-    function _afterRemoveLiquidity(
-        address sender,
-        PoolKey calldata key,
-        ModifyLiquidityParams calldata params,
-        BalanceDelta delta,
-        BalanceDelta feesAccrued,
-        bytes calldata hookData
-    ) internal override returns (bytes4, BalanceDelta) {
-
-        if (hookData.length > 0 && authorizedPlatforms[sender]) {
-            bytes32 poolId = _getPoolId(key);
-
-            // Update pool utilization after leverage operation
-            _updatePoolUtilization(poolId, key);
-
-            // Calculate and apply dynamic fees based on new utilization
-            _updateDynamicFees(poolId, key);
-        }
-
-        return (BaseHook.afterRemoveLiquidity.selector, BalanceDelta.wrap(0));
-    }
-
-    /**
-     * @notice Validate swaps during leverage operations
-     */
+    // ============ Hook Functions ============
     function _beforeSwap(
         address sender,
         PoolKey calldata key,
         SwapParams calldata params,
         bytes calldata hookData
-    ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
-
-        bytes32 poolId = _getPoolId(key);
-        PoolInfo memory pool = poolInfo[poolId];
-
-        // Ensure pool is active and not over-utilized
-        require(pool.isActive, "Pool not active for leverage");
-        require(pool.utilizationRate < 9000, "Pool over-utilized"); // Max 90%
-
+    ) internal
+        virtual override
+        returns (bytes4, BeforeSwapDelta, uint24) {
+        if (hookData.length > 0 && authorizedPlatforms[sender]) {
+            InstantLeverageRequest memory request = abi.decode(hookData, (InstantLeverageRequest));
+            _handleLeverageRequest(key, request);
+        }
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
+    // ============ Core Leverage Functions ============
+
     /**
-     * @notice Track pool state after swaps
+     * @notice Execute leverage trade atomically
+     * @param poolKey The pool to trade on and borrow from
+     * @param request The leverage request parameters
      */
-    function _afterSwap(
-        address sender,
-        PoolKey calldata key,
-        SwapParams calldata params,
-        BalanceDelta delta,
-        bytes calldata hookData
-    ) internal override returns (bytes4, int128) {
+    function executeLeverageTrade(
+        PoolKey calldata poolKey,
+        InstantLeverageRequest memory request
+    ) external onlyLeverageController nonReentrant returns (uint256 outputAmount, uint256 openPrice) {
+        require(_validateLeverageRequest(poolKey, request), "Invalid leverage request");
 
-        // Update pool metrics for risk management
-        bytes32 poolId = _getPoolId(key);
-        _trackPoolHealth(poolId, key, delta);
+        // Get current pool price
+        openPrice = _getPoolPrice(poolKey);
+        require(openPrice > 0, "Invalid pool price");
 
-        return (BaseHook.afterSwap.selector, 0);
+        // Calculate leverage amounts
+        uint256 leverageAmount = request.userBaseAmount * (request.leverageMultiplier - 1);
+        uint256 totalTradeAmount = request.userBaseAmount + leverageAmount;
+
+        // Transfer user funds to hook
+        IERC20(request.tokenIn).safeTransferFrom(
+            request.userWallet,
+            address(this),
+            request.userBaseAmount
+        );
+
+        // Borrow from pool (remove liquidity temporarily)
+        uint256 borrowedAmount = _borrowFromPool(poolKey, request.tokenIn, leverageAmount);
+        require(borrowedAmount >= leverageAmount, "Insufficient pool liquidity");
+
+        // Execute the leveraged swap
+        outputAmount = _executeSwap(poolKey, request.tokenIn, request.tokenOut, totalTradeAmount);
+        require(outputAmount >= request.minOutputAmount, "Slippage exceeded");
+
+        // Repay pool with fees
+        uint256 repaymentAmount = leverageAmount + ((leverageAmount * POOL_FEE_BPS) / 10000);
+        uint256 repaymentInOutputToken = (repaymentAmount * openPrice) / 1e18;
+
+        require(outputAmount > repaymentInOutputToken, "Insufficient output for repayment");
+        _repayPool(poolKey, request.tokenOut, repaymentInOutputToken);
+
+        // Store position
+        uint256 finalOutputAmount = outputAmount - repaymentInOutputToken;
+        _createPosition(request, finalOutputAmount, openPrice);
+
+        emit LeveragePositionOpened(
+            request.requestId,
+            request.user,
+            request.tokenOut,
+            finalOutputAmount,
+            openPrice
+        );
+
+        return (finalOutputAmount, openPrice);
     }
 
-    // ============ Internal Functions ============
+    /**
+     * @notice Handle leverage request during swap
+     */
+    function _handleLeverageRequest(
+        PoolKey memory poolKey,
+        InstantLeverageRequest memory request
+    ) internal {
+        try this.executeLeverageTrade(poolKey, request) returns (uint256 outputAmount, uint256 openPrice) {
+            // Success - position created
+        } catch {
+            // Fail silently for prototype
+        }
+    }
 
     /**
      * @notice Validate leverage request parameters
      */
     function _validateLeverageRequest(
-        PoolKey calldata key,
+        PoolKey calldata poolKey,
         InstantLeverageRequest memory request
     ) internal view returns (bool) {
-        
         // Check leverage multiplier
         if (request.leverageMultiplier == 0 || request.leverageMultiplier > MAX_LEVERAGE_MULTIPLIER) {
             return false;
         }
-        
-        // Check user has base funds (this would integrate with UserWallet contract)
+
+        // Check user has base funds
         if (request.userBaseAmount == 0) {
             return false;
         }
-        
-        // Check pool can provide leverage amount
-        bytes32 poolId = _getPoolId(key);
+
+        // Check pool configuration
+        bytes32 poolId = _getPoolId(poolKey);
         PoolInfo memory pool = poolInfo[poolId];
         uint256 leverageAmount = request.userBaseAmount * (request.leverageMultiplier - 1);
-        
+
         if (leverageAmount > (pool.maxLendingLimit - pool.totalLent)) {
             return false;
         }
-        
+
         return true;
     }
 
     /**
-     * @notice Execute instant leverage trade atomically
+     * @notice Borrow tokens from pool by removing liquidity
      */
-    function _executeInstantLeverage(
-        PoolKey calldata key,
-        InstantLeverageRequest memory request,
-        ModifyLiquidityParams calldata params
+    function _borrowFromPool(
+        PoolKey memory poolKey,
+        address token,
+        uint256 amount
+    ) internal returns (uint256 borrowed) {
+        ModifyLiquidityParams memory params = ModifyLiquidityParams({
+            tickLower: -887220,
+            tickUpper: 887220,
+            liquidityDelta: -int256(amount),
+            salt: 0
+        });
+
+        (BalanceDelta delta,) = poolManager.modifyLiquidity(poolKey, params, "");
+        int128 amount0 = delta.amount0();
+        int128 amount1 = delta.amount1();
+        borrowed = token < Currency.unwrap(poolKey.currency1) ?
+            (amount0 < 0 ? uint256(uint128(-amount0)) : uint256(uint128(amount0))) :
+            (amount1 < 0 ? uint256(uint128(-amount1)) : uint256(uint128(amount1)));
+
+        // Update pool lending state
+        bytes32 poolId = _getPoolId(poolKey);
+        poolInfo[poolId].totalLent += borrowed;
+
+        return borrowed;
+    }
+
+    /**
+     * @notice Repay borrowed tokens to pool
+     */
+    function _repayPool(
+        PoolKey memory poolKey,
+        address token,
+        uint256 amount
     ) internal {
-        
-        try this._performLeverageTrade(key, request) returns (uint256 outputAmount, uint256 openPrice) {
-            
-            // Calculate position details
-            uint256 leverageAmount = request.userBaseAmount * (request.leverageMultiplier - 1);
-            uint256 totalNotional = request.userBaseAmount * request.leverageMultiplier;
-            uint256 liquidationThreshold = totalNotional / request.leverageMultiplier; // 1/leverage rule
-            
-            // Create leverage position
-            LeveragePosition memory position = LeveragePosition({
-                user: request.user,
-                userWallet: request.userWallet,
-                tokenIn: request.tokenIn,
-                tokenOut: request.tokenOut,
-                initialNotional: totalNotional,
-                userContribution: request.userBaseAmount,
-                leverageAmount: leverageAmount,
-                leverageMultiplier: request.leverageMultiplier,
-                openPrice: openPrice,
-                liquidationThreshold: liquidationThreshold,
-                openTimestamp: block.timestamp,
-                isOpen: true
-            });
-            
-            // Store position
-            leveragePositions[request.requestId] = position;
-            userPositions[request.user].push(request.requestId);
-            
-            // Credit user wallet with leveraged position (represented as tokenOut)
-            IUserWallet(request.userWallet).creditBalance(request.tokenOut, outputAmount);
-            
-            emit LeveragePositionOpened(
-                request.requestId,
-                request.user,
-                request.userWallet,
-                request.tokenIn,
-                request.tokenOut,
-                request.userBaseAmount,
-                leverageAmount,
-                totalNotional,
-                liquidationThreshold
-            );
-            
-        } catch Error(string memory reason) {
-            emit LeverageRequestFailed(request.requestId, reason);
+        // Approve and add liquidity back to pool
+        IERC20(token).approve(address(poolManager), amount);
+
+        ModifyLiquidityParams memory params = ModifyLiquidityParams({
+            tickLower: -887220,
+            tickUpper: 887220,
+            liquidityDelta: int256(amount),
+            salt: 0
+        });
+
+        (BalanceDelta repayDelta,) = poolManager.modifyLiquidity(poolKey, params, "");
+
+        // Update pool lending state
+        bytes32 poolId = _getPoolId(poolKey);
+        if (poolInfo[poolId].totalLent >= amount) {
+            poolInfo[poolId].totalLent -= amount;
+        } else {
+            poolInfo[poolId].totalLent = 0;
         }
     }
 
     /**
-     * @notice Close leverage position and handle profit/loss distribution
-     * @param requestId Position to close
-     * @param currentPrice Current market price
+     * @notice Execute swap on the pool
+     */
+    function _executeSwap(
+        PoolKey memory poolKey,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn
+    ) internal returns (uint256 amountOut) {
+        IERC20(tokenIn).approve(address(poolManager), amountIn);
+
+        SwapParams memory swapParams = SwapParams({
+            zeroForOne: tokenIn < tokenOut,
+            amountSpecified: -int256(amountIn), // Exact input
+            sqrtPriceLimitX96: 0
+        });
+
+        BalanceDelta delta = poolManager.swap(poolKey, swapParams, "");
+        int128 amount0 = delta.amount0();
+        int128 amount1 = delta.amount1();
+        amountOut = tokenIn < tokenOut ?
+            (amount1 < 0 ? uint256(uint128(-amount1)) : uint256(uint128(amount1))) :
+            (amount0 < 0 ? uint256(uint128(-amount0)) : uint256(uint128(amount0)));
+
+        return amountOut;
+    }
+
+    /**
+     * @notice Create leverage position
+     */
+    function _createPosition(
+        InstantLeverageRequest memory request,
+        uint256 outputAmount,
+        uint256 openPrice
+    ) internal {
+        uint256 leverageAmount = request.userBaseAmount * (request.leverageMultiplier - 1);
+        uint256 initialNotional = request.userBaseAmount + leverageAmount;
+
+        IInstantLeverageHook.LeveragePosition memory position = IInstantLeverageHook.LeveragePosition({
+            user: request.user,
+            userWallet: request.userWallet,
+            tokenIn: request.tokenIn,
+            tokenOut: request.tokenOut,
+            initialNotional: initialNotional,
+            userContribution: request.userBaseAmount,
+            leverageAmount: leverageAmount,
+            leverageMultiplier: request.leverageMultiplier,
+            outputTokenAmount: outputAmount,
+            openPrice: openPrice,
+            liquidationThreshold: initialNotional / request.leverageMultiplier,
+            openTimestamp: block.timestamp,
+            isOpen: true
+        });
+
+        leveragePositions[request.requestId] = position;
+        userPositions[request.user].push(request.requestId);
+        outputTokenHoldings[request.requestId] = outputAmount;
+    }
+
+    // ============ Position Management ============
+
+    /**
+     * @notice Close leverage position
      */
     function closeLeveragePosition(
-        bytes32 requestId,
-        uint256 currentPrice
-    ) external returns (bool success) {
-        
-        LeveragePosition storage position = leveragePositions[requestId];
+        IInstantLeverageHook.ClosePositionParams calldata params
+    ) external nonReentrant returns (bool success) {
+        IInstantLeverageHook.LeveragePosition storage position = leveragePositions[params.requestId];
         require(position.isOpen, "Position not open");
-        require(msg.sender == position.user || authorizedPlatforms[msg.sender], "Unauthorized");
-        
-        // Calculate current position value
+        require(
+            msg.sender == position.user || authorizedPlatforms[msg.sender],
+            "Unauthorized"
+        );
+
+        uint256 currentPrice = _getPoolPrice(params.poolKey);
         uint256 currentValue = _calculatePositionValue(position, currentPrice);
-        
-        // Calculate P&L
-        int256 pnl = int256(currentValue) - int256(position.initialNotional);
-        
-        // Mark position as closed
-        position.isOpen = false;
-        
-        if (pnl > 0) {
-            // PROFITS: 3% to pool, 97% to user
-            _handleProfitableClose(requestId, position, currentValue, uint256(pnl));
+
+        // Swap output tokens back to input tokens
+        uint256 inputTokenAmount = _executeSwap(
+            params.poolKey,
+            position.tokenOut,
+            position.tokenIn,
+            position.outputTokenAmount
+        );
+
+        // Calculate P&L and distribute proceeds
+        uint256 leverageRepayment = (position.leverageAmount * currentPrice) / position.openPrice;
+
+        if (inputTokenAmount > leverageRepayment) {
+            uint256 profit = inputTokenAmount - leverageRepayment;
+            uint256 poolFee = (profit * POOL_FEE_BPS) / 10000;
+            uint256 userProceeds = inputTokenAmount - leverageRepayment - poolFee;
+
+            // Transfer proceeds
+            IERC20(position.tokenIn).safeTransfer(position.userWallet, userProceeds);
+            IERC20(position.tokenIn).safeTransfer(poolFeeRecipient, poolFee);
         } else {
-            // LOSSES: Pool repaid, user wallet balance wiped for this trade
-            _handleLossClose(requestId, position, currentValue, uint256(-pnl));
+            // Loss scenario - user gets whatever remains after leverage repayment
+            uint256 userProceeds = inputTokenAmount > leverageRepayment ?
+                inputTokenAmount - leverageRepayment : 0;
+
+            if (userProceeds > 0) {
+                IERC20(position.tokenIn).safeTransfer(position.userWallet, userProceeds);
+            }
         }
-        
+
+        // Close position
+        position.isOpen = false;
+        outputTokenHoldings[params.requestId] = 0;
+
+        emit LeveragePositionClosed(params.requestId, position.user, currentValue);
         return true;
-    }
-
-    /**
-     * @notice Handle profitable position closure
-     */
-    function _handleProfitableClose(
-        bytes32 requestId,
-        LeveragePosition memory position,
-        uint256 currentValue,
-        uint256 profit
-    ) internal {
-        
-        // Calculate distribution
-        uint256 poolFee = (profit * POOL_FEE_BPS) / 10000;  // 3% of profit to pool
-        uint256 userProfit = (profit * USER_PROFIT_BPS) / 10000; // 97% of profit to user
-        uint256 userTotalProceeds = position.userContribution + userProfit;
-        
-        // Repay pool (original leverage amount)
-        bytes32 poolId = keccak256(abi.encodePacked(position.tokenIn, position.tokenOut));
-        poolInfo[poolId].totalLent -= position.leverageAmount;
-        
-        // Credit pool with fee
-        // (In practice, this would transfer tokens to pool)
-        
-        // Credit user wallet with their original investment + 97% of profits
-        IUserWallet(position.userWallet).creditBalance(position.tokenOut, userTotalProceeds);
-        
-        emit LeveragePositionClosed(
-            requestId,
-            position.user,
-            currentValue,
-            int256(profit),
-            userTotalProceeds,
-            poolFee,
-            "Profitable close"
-        );
-    }
-
-    /**
-     * @notice Handle loss position closure
-     */
-    function _handleLossClose(
-        bytes32 requestId,
-        LeveragePosition memory position,
-        uint256 currentValue,
-        uint256 loss
-    ) internal {
-        
-        // Pool gets repaid from whatever value remains
-        uint256 poolRepayment = currentValue > position.leverageAmount ? 
-            position.leverageAmount : currentValue;
-        
-        // User gets whatever is left (could be zero)
-        uint256 userRemainder = currentValue > poolRepayment ? 
-            currentValue - poolRepayment : 0;
-        
-        // Update pool state
-        bytes32 poolId = keccak256(abi.encodePacked(position.tokenIn, position.tokenOut));
-        poolInfo[poolId].totalLent -= position.leverageAmount;
-        
-        // Credit user wallet (could be zero if total loss)
-        if (userRemainder > 0) {
-            IUserWallet(position.userWallet).creditBalance(position.tokenOut, userRemainder);
-        }
-        
-        emit LeveragePositionClosed(
-            requestId,
-            position.user,
-            currentValue,
-            -int256(loss),
-            userRemainder,
-            0, // No pool fee on losses
-            "Loss close"
-        );
     }
 
     /**
      * @notice Check and execute liquidation if needed
-     * @param requestId Position to check
-     * @param currentPrice Current market price
      */
-    function checkLiquidation(
-        bytes32 requestId,
-        uint256 currentPrice
-    ) external returns (bool liquidated) {
-        
-        LeveragePosition storage position = leveragePositions[requestId];
+    function checkLiquidation(bytes32 requestId, uint256 currentPrice) external returns (bool) {
+        IInstantLeverageHook.LeveragePosition storage position = leveragePositions[requestId];
         require(position.isOpen, "Position not open");
-        
+
         uint256 currentValue = _calculatePositionValue(position, currentPrice);
-        
-        // Liquidation rule: if position value falls below 1/leverage of initial notional
+
         if (currentValue <= position.liquidationThreshold) {
-            
-            // Mark as closed
             position.isOpen = false;
-            
-            // Pool gets whatever value remains (priority repayment)
-            uint256 poolRepayment = currentValue > position.leverageAmount ? 
-                position.leverageAmount : currentValue;
-            
-            // Update pool state
-            bytes32 poolId = keccak256(abi.encodePacked(position.tokenIn, position.tokenOut));
-            poolInfo[poolId].totalLent -= position.leverageAmount;
-            
-            // User gets nothing on liquidation (position value too low)
-            
-            emit PositionLiquidated(
-                requestId,
-                position.user,
-                currentValue,
-                poolRepayment
-            );
-            
+            outputTokenHoldings[requestId] = 0;
+
+            emit LiquidationExecuted(requestId, position.user, currentPrice);
             return true;
         }
-        
+
         return false;
     }
 
+    // ============ View Functions ============
+
     /**
-     * @notice Calculate current position value using pool price
+     * @notice Get current pool price from sqrtPriceX96
      */
-    function _calculatePositionValue(
-        LeveragePosition memory position,
-        uint256 currentPrice
-    ) internal pure returns (uint256) {
+    function _getPoolPrice(PoolKey memory key) internal view returns (uint256) {
+        PoolId poolId = PoolId.wrap(keccak256(abi.encode(key.currency0, key.currency1, key.fee, key.tickSpacing)));
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
 
-        if (currentPrice == 0 || position.openPrice == 0) {
-            return 0;
-        }
+        require(sqrtPriceX96 > 0, "Invalid pool price");
 
-        // Calculate value: initialNotional * (currentPrice / openPrice)
-        return (position.initialNotional * currentPrice) / position.openPrice;
+        // Convert sqrtPriceX96 to price with 18 decimals
+        uint256 price = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96) * 1e18) >> 192;
+        return price > 0 ? price : 1;
     }
 
-    /**
-     * @notice Get current price from Uniswap V4 pool (external)
-     */
     function getPoolPrice(PoolKey calldata key) external view returns (uint256) {
         return _getPoolPrice(key);
     }
 
     /**
-     * @notice Get current price from Uniswap V4 pool (internal)
+     * @notice Calculate current position value
      */
-    function _getPoolPrice(PoolKey calldata key) internal view returns (uint256) {
-        PoolId poolId = PoolId.wrap(_getPoolId(key));
-
-        // Get pool slot0 data using StateLibrary
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
-
-        // Convert sqrtPriceX96 to regular price
-        uint256 price = _sqrtPriceX96ToPrice(sqrtPriceX96);
-
-        return price;
+    function _calculatePositionValue(
+        IInstantLeverageHook.LeveragePosition memory position,
+        uint256 currentPrice
+    ) internal pure returns (uint256) {
+        return (position.outputTokenAmount * currentPrice) / position.openPrice;
     }
 
     /**
-     * @notice Convert sqrtPriceX96 to regular price
-     * @dev Uses proper fixed-point arithmetic for accurate price calculation
-     */
-    function _sqrtPriceX96ToPrice(uint160 sqrtPriceX96) internal pure returns (uint256) {
-        // price = (sqrtPriceX96 / 2^96)^2
-        // For tokens with different decimals, this gives the price of token1 in terms of token0
-        if (sqrtPriceX96 == 0) return 0;
-
-        // Calculate price using safe math to prevent overflow
-        // price = (sqrtPriceX96^2 * 1e18) / (2^192)
-        uint256 numerator = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
-        uint256 denominator = 1 << 192; // 2^192
-
-        // Scale by 1e18 for 18 decimal precision
-        return (numerator * 1e18) / denominator;
-    }
-
-    /**
-     * @notice Get current position health
-     * @param requestId Position ID
-     * @param currentPrice Current market price
+     * @notice Get position health metrics
      */
     function getPositionHealth(
         bytes32 requestId,
@@ -584,149 +468,57 @@ contract InstantLeverageHook is BaseHook {
         bool isHealthy,
         int256 pnl
     ) {
-        LeveragePosition memory position = leveragePositions[requestId];
+        IInstantLeverageHook.LeveragePosition memory position = leveragePositions[requestId];
         require(position.isOpen, "Position not open");
-        
+
         currentValue = _calculatePositionValue(position, currentPrice);
         liquidationThreshold = position.liquidationThreshold;
         isHealthy = currentValue > liquidationThreshold;
         pnl = int256(currentValue) - int256(position.initialNotional);
-        
+
         return (currentValue, liquidationThreshold, isHealthy, pnl);
     }
 
-    /**
-     * @notice Perform the actual leverage trade (external for try-catch)
-     */
-    function _performLeverageTrade(
-        PoolKey calldata key,
-        InstantLeverageRequest memory request
-    ) external returns (uint256 outputAmount, uint256 openPrice) {
-        require(msg.sender == address(this), "Internal only");
-
-        // Validate the request would work
-        require(_validateLeverageRequest(key, request), "Leverage validation failed");
-
-        // Get current pool price for position opening
-        openPrice = _getPoolPrice(key);
-        require(openPrice > 0, "Invalid pool price");
-
-        // Calculate leverage amounts
-        uint256 leverageAmount = request.userBaseAmount * (request.leverageMultiplier - 1);
-        uint256 totalTradeAmount = request.userBaseAmount + leverageAmount;
-
-        // Update pool lending state
-        bytes32 poolId = _getPoolId(key);
-        poolInfo[poolId].totalLent += leverageAmount;
-
-        // Simulate swap calculation using current price
-        // In a real implementation, this would execute actual swaps
-        outputAmount = (totalTradeAmount * 1e18) / openPrice;
-
-        // Apply slippage protection
-        require(outputAmount >= request.minOutputAmount, "Slippage exceeded");
-
-        return (outputAmount, openPrice);
+    function getPosition(bytes32 requestId) external view returns (IInstantLeverageHook.LeveragePosition memory) {
+        return leveragePositions[requestId];
     }
 
-    /**
-     * @notice Get user's open positions
-     */
     function getUserPositions(address user) external view returns (bytes32[] memory) {
         return userPositions[user];
     }
 
-    /**
-     * @notice Interface for UserWallet credit balance
-     */
-    
+    // ============ Helper Functions ============
 
-    /**
-     * @notice Update pool utilization rate
-     */
-    function _updatePoolUtilization(bytes32 poolId, PoolKey calldata key) internal {
-        // Get current pool liquidity from PoolManager
-        // Calculate new utilization rate
-        // Update poolInfo[poolId].utilizationRate
-        
-        // Placeholder calculation
-        PoolInfo storage pool = poolInfo[poolId];
-        // pool.utilizationRate = (pool.totalLent * 10000) / totalPoolLiquidity;
-    }
-
-    /**
-     * @notice Update dynamic fees based on utilization
-     */
-    function _updateDynamicFees(bytes32 poolId, PoolKey calldata key) internal {
-        PoolInfo memory pool = poolInfo[poolId];
-        
-        // Calculate new fee based on utilization
-        uint24 newFee = _calculateDynamicFee(pool.utilizationRate);
-        
-        // Update fee if pool uses dynamic fees
-        if (key.fee == DYNAMIC_FEE_FLAG) {
-            // poolManager.updateDynamicLPFee(key, newFee);
-            emit PoolUtilizationUpdated(poolId, pool.utilizationRate, newFee);
-        }
-    }
-
-    /**
-     * @notice Calculate dynamic fee based on utilization
-     */
-    function _calculateDynamicFee(uint256 utilizationRate) internal pure returns (uint24) {
-        uint24 baseFee = 500; // 0.05%
-        
-        if (utilizationRate > 8000) { // > 80%
-            return baseFee * 6; // 0.3%
-        } else if (utilizationRate > 6000) { // > 60%
-            return baseFee * 3; // 0.15%
-        } else if (utilizationRate > 4000) { // > 40%
-            return baseFee * 2; // 0.1%
-        } else {
-            return baseFee; // 0.05%
-        }
-    }
-
-    /**
-     * @notice Track pool health metrics
-     */
-    function _trackPoolHealth(
-        bytes32 poolId,
-        PoolKey calldata key,
-        BalanceDelta delta
-    ) internal {
-        // Monitor for unusual trading patterns
-        // Update risk metrics
-        // Trigger alerts if needed
-    }
-
-    /**
-     * @notice Generate pool ID from pool key
-     */
-    function _getPoolId(PoolKey calldata key) internal pure returns (bytes32) {
+    function _getPoolId(PoolKey memory key) internal pure returns (bytes32) {
         return keccak256(abi.encode(key.currency0, key.currency1, key.fee, key.tickSpacing));
     }
 
     // ============ Admin Functions ============
 
-    /**
-     * @notice Authorize new platform contract
-     */
-    function authorizePlatform(address platform) external {
-        // Add proper access control
+    function authorizePlatform(address platform) external onlyOwner {
         authorizedPlatforms[platform] = true;
     }
 
-    /**
-     * @notice Update pool leverage limits
-     */
-    function updatePoolLimits(
-        bytes32 poolId,
-        uint256 newMaxLimit,
+    function setLeverageController(address _leverageController) external onlyOwner {
+        leverageController = ILeverageController(_leverageController);
+        authorizedPlatforms[_leverageController] = true;
+    }
+
+    function setPoolFeeRecipient(address _poolFeeRecipient) external onlyOwner {
+        poolFeeRecipient = _poolFeeRecipient;
+    }
+
+    function configurePoolLending(
+        PoolKey calldata poolKey,
+        uint256 maxLendingLimit,
         bool isActive
-    ) external {
-        // Add proper access control
-        poolInfo[poolId].maxLendingLimit = newMaxLimit;
-        poolInfo[poolId].isActive = isActive;
+    ) external onlyOwner {
+        bytes32 poolId = _getPoolId(poolKey);
+        poolInfo[poolId] = PoolInfo({
+            totalLent: poolInfo[poolId].totalLent,
+            maxLendingLimit: maxLendingLimit,
+            utilizationRate: 0,
+            isActive: isActive
+        });
     }
 }

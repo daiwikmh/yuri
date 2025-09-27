@@ -10,7 +10,7 @@ create-wallet:
 		--private-key $(PRIVATE_KEY) \
 		--broadcast
 
-deploy-contract:
+deploy-lev:
 	forge script script/DeployLeverageSystem.s.sol:DeployLeverageSystem \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
