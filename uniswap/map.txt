@@ -1,21 +1,28 @@
-Leverage System Deployment Setup ===
+TEST0 deployed: 0x39C98B378C6C5ABa20270042A0D289f179A9D8C1
+     TEST1 deployed: 0x1c0aE06F7FbB0732153e7F0855544cA23DfB60fB
+     TEST1 deployed: 0xDd163e12F63f756FF89745Eb0572b0bfCeF987AF
+     TEST1 deployed: 0x559bAE05FA917Ffa3EB895672127430207958Cc4
+
+
+
+   === Leverage System Deployment Setup ===
   Deployer: 0xC4Fe13e473E6aD2BB0Ba8a365Bf581080d92dB18
   Protocol Owner: 0xC4Fe13e473E6aD2BB0Ba8a365Bf581080d92dB18
   === Starting Leverage System Deployment ===
   2. Deploying UserWallet template...
-     UserWallet template deployed at: 0x21d6047173a1CE72A6769f620feD45e11EEFF608
+     UserWallet template deployed at: 0x0bAeF1808358B4dD9eFFE644a65C66B056fa1F3b
   3. Deploying WalletFactory...
-     WalletFactory deployed at: 0xA78f2b8E27E7048Cb2D2c4AC679819989aE98134
+     WalletFactory deployed at: 0x40A388752F12765A94Ff5763467958104eC22d20
   4. Mining salt for InstantLeverageHook...
-     Required hook flags: 5056
-     Mined hook address: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
-     Mined salt: 0x0000000000000000000000000000000000000000000000000000000000001d74
+     Required hook flags: 960
+     Mined hook address: 0xCCC76dee7e3161447b28A8661Ad9164114A103C0
+     Mined salt: 0x00000000000000000000000000000000000000000000000000000000000081ca
      Hook flags verified successfully
   5. Deploying InstantLeverageHook...
-     InstantLeverageHook deployed at: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
+     InstantLeverageHook deployed at: 0xCCC76dee7e3161447b28A8661Ad9164114A103C0
      Hook deployment verified successfully
   6. Deploying LeverageController...
-     LeverageController deployed at: 0xdD55A04AdFD14122c92C0d92D37137fD414E9d1a
+     LeverageController deployed at: 0x725212999a45ABCb651A84b96C70438C6c1d7c43
   7. Setting up permissions...
      Authorized LeverageController in hook
      Set leverage hook in controller
@@ -28,16 +35,35 @@ Leverage System Deployment Setup ===
   === Leverage System Deployment Complete ===
   === Deployment Summary ===
   PoolManager: 0x00B036B58a818B1BC34d502D3fE730Db729e62AC
-  UserWallet Template: 0x21d6047173a1CE72A6769f620feD45e11EEFF608
-  WalletFactory: 0xA78f2b8E27E7048Cb2D2c4AC679819989aE98134
-  InstantLeverageHook: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
-  LeverageController: 0xdD55A04AdFD14122c92C0d92D37137fD414E9d1a
+  UserWallet Template: 0x0bAeF1808358B4dD9eFFE644a65C66B056fa1F3b
+  WalletFactory: 0x40A388752F12765A94Ff5763467958104eC22d20
+  InstantLeverageHook: 0xCCC76dee7e3161447b28A8661Ad9164114A103C0
+  LeverageController: 0x725212999a45ABCb651A84b96C70438C6c1d7c43
 
 
-
-
-  === Deployment Summary ===
-  AssetManager: 0xA9B17248F66B916f13FBB19CEd39E6036B1910D2
-  LeverageController: 0xdD55A04AdFD14122c92C0d92D37137fD414E9d1a
-  InstantLeverageHook: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
+  === Pool Configuration Setup ===
+  LeverageController: 0x85ADa99695eFA267f180ff441FEDf8bb353b3E78
+  InstantLeverageHook: 0x620417d0E4d2977c07CEBb7ae260B414B7CF13C0
   PoolManager: 0x00B036B58a818B1BC34d502D3fE730Db729e62AC
+  === Configuring Pools for Leverage Trading ===
+  1. Configuring TEST0/TEST1 pool...
+      TEST0/TEST1 pool configured:
+        - Max Leverage: 5x
+        - Max Utilization: 80%
+        - Base Fee Rate: 0.5%
+
+
+
+       InstantLeverageHook: 0x3143D8279c90DdFAe5A034874C5d232AF88b03c0
+  PoolManager: 0x00B036B58a818B1BC34d502D3fE730Db729e62AC
+  TEST0: 0xB08D5e594773C55b2520a646b4EB3AA5fA08aF21
+  TEST1: 0x725212999a45ABCb651A84b96C70438C6c1d7c43
+  === Initializing Pools ===
+  Owner address: 0xC4Fe13e473E6aD2BB0Ba8a365Bf581080d92dB18
+  1. Initializing TEST0/TEST1 pool...
+      TEST0/TEST1 pool initialized successfully
+      Initial tick: 0
+      Pool price: 1:1 ratio
+  === Pool Initialization Complete ===
+  Pools are now ready for liquidity provision!
+  Next step: Add liquidity with AddLiquidity script

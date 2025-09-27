@@ -4,6 +4,8 @@ export $(shell sed 's/=.*//' .env)
 # Default target
 all: help
 
+
+
 create-wallet:
 	forge script script/DeployWalletFactory.s.sol:DeployWalletFactory \
 		--rpc-url $(RPC_URL) \
@@ -22,16 +24,42 @@ check-compile:
 		--private-key $(PRIVATE_KEY) \
 		--broadcast 
 
+liquid:
+	forge script script/AddLiquidity.s.sol:AddLiquidity \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
+
+initialize:
+	forge script script/InitializePools.s.sol:InitializePools \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
+
 create-pool:
 	forge script script/ConfigurePools.s.sol:ConfigurePools \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
 		--broadcast --via-ir
 token:
-	forge script script/ERC20.s.sol:Token \
+	forge script script/MintTokens.s.sol:MintTokens \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
-		--broadcast
+		--broadcast --via-ir
+
+# Initialize Pool A/C (TEST0/TEST2)
+initialize-pool-ac:
+	forge script script/InitializePoolAC.s.sol:InitializePoolAC \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
+
+# Add liquidity to Pool A/C (TEST0/TEST2)
+liquid-ac:
+	forge script script/AddLiquidityAC.s.sol:AddLiquidityAC \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
 
 # ============================================================================
 # CROSS-POOL LEVERAGE SYSTEM - ASSET MANAGER
@@ -103,6 +131,12 @@ help:
 	@echo "make check-cross-pool-position POSITION_ID=0x... -> Check position health"
 	@echo "make close-cross-pool-position POSITION_ID=0x... -> Close cross-pool position"
 	@echo "make check-cross-pool-status -> Check system status"
+	@echo ""
+	@echo "💧 POOL SETUP:"
+	@echo "make initialize         -> Initialize Pool A/B (TEST0/TEST1)"
+	@echo "make liquid             -> Add liquidity to Pool A/B"
+	@echo "make initialize-pool-ac -> Initialize Pool A/C (TEST0/TEST2)"
+	@echo "make liquid-ac          -> Add liquidity to Pool A/C"
 	@echo ""
 	@echo "🛠️ UTILITIES:"
 	@echo "make token              -> Deploy test tokens"

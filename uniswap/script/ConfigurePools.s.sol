@@ -9,16 +9,16 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 
 // Import our contracts
-import "../src/LeverageController.sol";
-import "../src/InstantLeverageHook.sol";
+import {LeverageController} from "../src/LeverageController.sol";
+import {InstantLeverageHook} from "../src/InstantLeverageHook.sol";
 
 /**
  * @title Configure Pools
  * @notice Configures pools for leverage trading after initial deployment
  */
 contract ConfigurePools is Script {
-    address constant TEST0 = 0x5c4B14CB096229226D6D464Cba948F780c02fbb7;
-    address constant TEST1 = 0x70bF7e3c25B46331239fD7427A8DD6E45B03CB4c;
+    address constant TEST0 = 0x559bAE05FA917Ffa3EB895672127430207958Cc4;
+    address constant TEST1 = 0xDd163e12F63f756FF89745Eb0572b0bfCeF987AF;
 
     LeverageController public leverageController;
     InstantLeverageHook public leverageHook;
@@ -101,12 +101,14 @@ contract ConfigurePools is Script {
         vm.stopBroadcast();
 
         console.log("=== Pool Configuration Complete ===");
-        console.log("The leverage system is now ready for trading!");
+        console.log("Pools configured for leverage trading!");
         console.log("");
         console.log("Next steps:");
-        console.log("1. Users can create wallets via WalletFactory.createUserAccount()");
-        console.log("2. Users can deposit funds via WalletFactory.depositFunds()");
-        console.log("3. Users can set trading delegations via UserWallet.setDelegation()");
-        console.log("4. Execute leverage trades via LeverageController.requestLeverageTrade()");
+        console.log("1. Initialize pools with InitializePools script");
+        console.log("2. Add liquidity with AddLiquidity script");
+        console.log("3. Users can create wallets via WalletFactory.createUserAccount()");
+        console.log("4. Users can deposit funds via WalletFactory.depositFunds()");
+        console.log("5. Users can set trading delegations via UserWallet.setDelegation()");
+        console.log("6. Execute leverage trades via LeverageController.requestLeverageTrade()");
     }
 }

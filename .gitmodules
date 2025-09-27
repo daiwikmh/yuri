@@ -16,3 +16,6 @@
 [submodule "uniswap/lib/solmate"]
 	path = uniswap/lib/solmate
 	url = https://github.com/transmissions11/solmate
+[submodule "uniswap/lib/permit2"]
+	path = uniswap/lib/permit2
+	url = https://github.com/uniswap/permit2

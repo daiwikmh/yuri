@@ -22,15 +22,15 @@ import "forge-std/console.sol";
  */
 contract CrossPoolLeverageTrading is Script {
     // Contract addresses - will be loaded from env
-    address constant ASSET_MANAGER = 0x0000000000000000000000000000000000000000; // Update after deployment
-    address constant LEVERAGE_CONTROLLER = 0xdD55A04AdFD14122c92C0d92D37137fD414E9d1a;
-    address constant INSTANT_LEVERAGE_HOOK = 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0;
+    address constant LEVERAGE_CONTROLLER = 0x725212999a45ABCb651A84b96C70438C6c1d7c43;
+    address constant INSTANT_LEVERAGE_HOOK = 0x3143D8279c90DdFAe5A034874C5d232AF88b03c0;
 
-    // Test tokens
-    address constant TEST0 = 0x5c4B14CB096229226D6D464Cba948F780c02fbb7; // Token A
-    address constant TEST1 = 0x70bF7e3c25B46331239fD7427A8DD6E45B03CB4c; // Token B (bridge)
-    // TODO: Add TEST2 for Token C
+    // Token addresses
+    address constant TEST0 = 0xB08D5e594773C55b2520a646b4EB3AA5fA08aF21; // Token A
+    address constant TEST1 = 0xe3A426896Ca307c3fa4A818f2889F44582460954; // Token B
+    // TEST2 (Token C) - To be deployed
 
+   
     // Contract instances
     AssetManager public assetManager;
     IWalletFactory public walletFactory;

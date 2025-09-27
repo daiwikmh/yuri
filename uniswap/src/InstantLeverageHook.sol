@@ -102,7 +102,7 @@ contract InstantLeverageHook is BaseHook, Ownable, ReentrancyGuard {
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: true,
+            afterInitialize: false,
             beforeAddLiquidity: false,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: true,
