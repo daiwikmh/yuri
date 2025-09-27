@@ -1,260 +1,400 @@
 # Uniswap V4 Leverage Trading System
 
-A comprehensive leverage trading platform built on Uniswap V4 that enables users to execute leveraged trades without collateral requirements through atomic smart contract interactions.
+## 📋 Overview
 
-## System Overview
+A decentralized leverage trading platform built on Uniswap V4 that enables users to execute leveraged trades using the same pools for both trading and liquidity provision. The system provides atomic execution with real-time position monitoring and automatic profit/loss distribution.
 
-The system consists of four main contracts that work together to provide seamless leverage trading:
+## 🏗️ System Architecture
 
-### 1. WalletFactory.sol & UserWallet.sol
-- **Purpose**: User onboarding and non-custodial fund management
-- **Features**:
-  - Clone-based wallet deployment for gas efficiency
-  - Delegation-based permission system for secure trade execution
-  - Support for TEST0/TEST1/ETH tokens
-  - User-controlled fund withdrawal and deposit
+### Core Components
 
-### 2. InstantLeverageHook.sol
-- **Purpose**: Uniswap V4 hook for atomic leverage execution
-- **Features**:
-  - Up to 10x leverage without collateral requirements
-  - Automatic profit/loss distribution (3% to pool, 97% to user)
-  - Real-time liquidation at 1/leverage threshold
-  - Pool-sourced temporary liquidity for trades
-  - Real-time pricing from Uniswap V4 pools
+1. **WalletFactory.sol & UserWallet.sol** - Non-custodial fund management
+2. **InstantLeverageHook.sol** - Uniswap V4 hook for atomic leverage execution
+3. **LeverageController.sol** - Orchestrates leverage operations and risk management
+4. **ILeverageInterfaces.sol** - Interface definitions
 
-### 3. LeverageController.sol
-- **Purpose**: Main orchestrator for the leverage system
-- **Features**:
-  - Trade request management and validation
-  - Position lifecycle management
-  - Risk management and pool utilization monitoring
-  - Batch liquidation processing
-  - Emergency controls
+## 💰 Fund Flow Mechanics
 
-### 4. ILeverageInterfaces.sol
-- **Purpose**: Centralized interface definitions
-- **Features**:
-  - Prevents code duplication across contracts
-  - Ensures consistency in contract interactions
-  - Type safety for all system components
+### Leverage Trade Execution Flow
 
-## Key Features
-
-### Zero-Collateral Leverage
-- Users can open leveraged positions up to 10x without posting collateral
-- Leverage is provided by temporarily borrowing from Uniswap V4 pools
-- Atomic execution ensures borrowing and repayment happen in single transaction
-
-### Automatic Profit/Loss Settlement
-- **Profitable trades**: 97% to user, 3% to pool as fee
-- **Loss trades**: Pool gets priority repayment, user receives remainder
-- **Liquidations**: Triggered when position value falls below 1/leverage threshold
-
-### Real-Time Risk Management
-- Continuous position health monitoring
-- Dynamic fee adjustment based on pool utilization
-- Emergency pause and liquidation mechanisms
-- Batch processing for gas-efficient operations
-
-### Non-Custodial Design
-- Users maintain full control of their funds in smart wallets
-- Delegation system allows secure trade execution
-- Platform cannot access user funds without proper delegation
-
-## Contract Addresses (Testnet)
-
-Configure these in your environment:
-```bash
-POOL_MANAGER_ADDRESS=<deployed_address>
-USER_WALLET_TEMPLATE_ADDRESS=<deployed_address>
-WALLET_FACTORY_ADDRESS=<deployed_address>
-INSTANT_LEVERAGE_HOOK_ADDRESS=<deployed_address>
-LEVERAGE_CONTROLLER_ADDRESS=<deployed_address>
+```
+1. User deposits 100 TEST0 → UserWallet
+2. User requests 5x leverage trade: TEST0 → TEST1
+3. System borrows 400 TEST0 from TEST0/TEST1 pool (temporary)
+4. Executes swap: 500 TEST0 → TEST1 on same pool
+5. Repays pool: 400 TEST0 equivalent + 3% fee
+6. User receives leveraged TEST1 position (97% of profits)
 ```
 
-## Token Addresses (Testnet)
+### Atomic Execution Details
 
-```bash
-TEST0=0x5c4B14CB096229226D6D464Cba948F780c02fbb7
-TEST1=0x70bF7e3c25B46331239fD7427A8DD6E45B03CB4c
-ETH=0x0000000000000000000000000000000000000000
+```solidity
+// 1. Borrow from pool (remove liquidity temporarily)
+_borrowFromPool(poolKey, tokenIn, leverageAmount);
+
+// 2. Execute leveraged swap
+_executeSwap(poolKey, tokenIn, tokenOut, totalAmount);
+
+// 3. Repay pool with fees
+_repayPool(poolKey, tokenOut, repaymentAmount);
+
+// 4. Store user position
+_createPosition(request, finalOutputAmount, openPrice);
 ```
 
-## Usage Flow
+## 👤 User Journey
 
-### 1. User Onboarding
+### Step 1: Setup Account
 ```solidity
 // Create user wallet
-address payable userWallet = walletFactory.createUserAccount();
+address userWallet = walletFactory.createUserAccount();
 
 // Deposit funds
-walletFactory.depositFunds(TEST0, amount);
+walletFactory.depositFunds(TEST0, 1000 * 1e18);
 ```
 
-### 2. Setting Up Delegation
+### Step 2: Set Trading Delegation
 ```solidity
-// User signs delegation off-chain, then calls:
-userWallet.setDelegation(
-    delegationHash,
-    maxTradeAmount,
-    expiry,
-    signature
-);
+// Create delegation for leverage trades
+bytes32 delegationHash = keccak256(abi.encode(user, maxAmount, deadline));
+userWallet.setDelegation(delegationHash, maxAmount, deadline, signature);
 ```
 
-### 3. Requesting Leverage Trade
+### Step 3: Request Leverage Trade
 ```solidity
-bytes32 requestId = leverageController.requestLeverageTrade(
-    poolKey,
-    tokenIn,
-    tokenOut,
-    baseAmount,
-    leverageMultiplier, // 2-10x
-    minOutputAmount,
-    delegationHash,
-    deadline
-);
+ILeverageController.TradeRequestParams memory params = ILeverageController.TradeRequestParams({
+    poolKey: poolKey,
+    tokenIn: TEST0,
+    tokenOut: TEST1,
+    baseAmount: 100 * 1e18,
+    leverageMultiplier: 5,
+    minOutputAmount: 450 * 1e18,
+    delegationHash: delegationHash,
+    deadline: block.timestamp + 1 hours
+});
+
+bytes32 requestId = leverageController.requestLeverageTrade(params);
 ```
 
-### 4. Executing Trade
+### Step 4: Execute Trade
 ```solidity
 bool success = leverageController.executeLeverageTrade(requestId, poolKey);
 ```
 
-### 5. Position Management
+### Step 5: Monitor Position
 ```solidity
 // Check position health
 (uint256 currentValue, uint256 liquidationThreshold, bool isHealthy, int256 pnl) =
     leverageController.getPositionHealth(requestId, currentPrice);
 
-// Close position
-bool closed = leverageController.closeLeveragePosition(requestId, poolKey);
-
-// Check for liquidation
-bool liquidated = leverageController.checkLiquidation(requestId, poolKey);
+// Get position details
+IInstantLeverageHook.LeveragePosition memory position =
+    leverageHook.getPosition(requestId);
 ```
 
-## Security Features
+### Step 6: Close Position
+```solidity
+bool success = leverageController.closeLeveragePosition(requestId, poolKey);
+```
 
-### Input Validation
-- Comprehensive parameter validation at all entry points
-- Slippage protection for all trades
-- Deadline enforcement for time-sensitive operations
+## 🔧 Key Functions Reference
 
-### Access Controls
-- Owner-only functions for critical system parameters
-- Platform authorization for hook interactions
-- User-only functions for wallet operations
+### WalletFactory.sol
 
-### Risk Management
-- Maximum leverage limits (global and per-pool)
-- Pool utilization caps to prevent over-leveraging
-- Emergency pause functionality
-- Automatic liquidation triggers
+| Function | Description | Access |
+|----------|-------------|--------|
+| `createUserAccount()` | Creates new user wallet | Public |
+| `depositFunds(token, amount)` | Deposits ERC20 tokens | Public |
+| `depositETH()` | Deposits ETH | Public |
+| `addToken(token)` | Whitelist new token | Owner |
 
-### Atomic Execution
-- All leverage trades execute atomically or revert completely
-- No partial execution states that could leave system in inconsistent state
-- Proper reentrancy protection throughout
+### UserWallet.sol
 
-## Deployment
+| Function | Description | Access |
+|----------|-------------|--------|
+| `setDelegation(hash, amount, expiry, sig)` | Sets trading delegation | Owner |
+| `executeTrade(token, amount, data, hash)` | Executes delegated trade | Platform |
+| `withdraw(token, amount)` | Withdraws funds | Owner |
+| `balances(token)` | Check token balance | View |
+
+### LeverageController.sol
+
+| Function | Description | Access |
+|----------|-------------|--------|
+| `requestLeverageTrade(params)` | Request leverage trade | Public |
+| `executeLeverageTrade(requestId, poolKey)` | Execute leverage trade | Public |
+| `closeLeveragePosition(requestId, poolKey)` | Close position | User |
+| `getPositionHealth(requestId, price)` | Check position health | View |
+| `getUserActivePositions(user)` | Get user's positions | View |
+| `configurePool(poolKey, params)` | Configure pool settings | Owner |
+
+### InstantLeverageHook.sol
+
+| Function | Description | Access |
+|----------|-------------|--------|
+| `executeLeverageTrade(poolKey, request)` | Execute atomic leverage | Controller |
+| `closeLeveragePosition(params)` | Close user position | Authorized |
+| `getPoolPrice(poolKey)` | Get current pool price | View |
+| `getPosition(requestId)` | Get position details | View |
+| `checkLiquidation(requestId, price)` | Check liquidation | Public |
+
+## 🧪 Testing Guide
 
 ### Prerequisites
+
 ```bash
+# Install dependencies
 forge install
-# Set up environment variables for deployment
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your values
 ```
 
 ### Deploy System
+
 ```bash
+# 1. Check contract sizes
+forge script script/CheckSizes.s.sol
+
+# 2. Deploy contracts
 forge script script/DeployLeverageSystem.s.sol --broadcast --rpc-url $RPC_URL
+
+# 3. Configure pools
+forge script script/ConfigurePools.s.sol --broadcast --rpc-url $RPC_URL
 ```
 
-### Configure Pools
+### Test Scenarios
+
+#### Test 1: Basic Leverage Trade
 ```solidity
+// Setup
+address user = makeAddr("user");
+deal(TEST0, user, 1000e18);
+
+// Create wallet and deposit
+vm.startPrank(user);
+address userWallet = walletFactory.createUserAccount();
+IERC20(TEST0).approve(address(walletFactory), 100e18);
+walletFactory.depositFunds(TEST0, 100e18);
+
+// Set delegation
+bytes32 delegationHash = keccak256(abi.encode(user, 100e18, block.timestamp + 1 hours));
+// ... sign delegation
+userWallet.setDelegation(delegationHash, 100e18, block.timestamp + 1 hours, signature);
+
+// Request and execute trade
+bytes32 requestId = leverageController.requestLeverageTrade(params);
+bool success = leverageController.executeLeverageTrade(requestId, poolKey);
+vm.stopPrank();
+
+assertEq(success, true);
+```
+
+#### Test 2: Position Liquidation
+```solidity
+// Execute trade with high leverage
+bytes32 requestId = _executeLeverageTrade(user, 10); // 10x leverage
+
+// Simulate price drop
+_manipulatePoolPrice(poolKey, -50); // 50% price drop
+
+// Check liquidation
+bool liquidated = leverageController.checkLiquidation(requestId, poolKey);
+assertEq(liquidated, true);
+```
+
+#### Test 3: Profitable Position Closure
+```solidity
+// Execute trade
+bytes32 requestId = _executeLeverageTrade(user, 5);
+
+// Simulate price increase
+_manipulatePoolPrice(poolKey, 20); // 20% price increase
+
+// Close position
+bool success = leverageController.closeLeveragePosition(requestId, poolKey);
+assertEq(success, true);
+
+// Check user received profits
+uint256 finalBalance = UserWallet(userWallet).balances(TEST0);
+assertGt(finalBalance, initialBalance);
+```
+
+### Integration Tests
+
+```bash
+# Run full test suite
+forge test
+
+# Run specific test files
+forge test --match-contract LeverageSystemTest
+forge test --match-test testBasicLeverageTrade
+
+# Run with verbose output
+forge test -vvv
+```
+
+## 🛡️ Risk Management
+
+### Position Health Monitoring
+
+```solidity
+// Liquidation threshold = initialNotional / leverageMultiplier
+// Example: $1000 position with 5x leverage liquidates at $200
+
+uint256 liquidationThreshold = position.initialNotional / position.leverageMultiplier;
+bool isHealthy = currentValue > liquidationThreshold;
+```
+
+### Safety Features
+
+- **Atomic execution**: All operations succeed or revert entirely
+- **Real-time pricing**: Uses pool's own price for position valuation
+- **Auto-liquidation**: Positions automatically liquidated when unhealthy
+- **Fee distribution**: 97% profits to users, 3% to pools
+- **Emergency controls**: Owner can pause system and force-close positions
+
+## 💡 Advanced Usage
+
+### Batch Operations
+
+```solidity
+// Check multiple positions for liquidation
+bytes32[] memory requestIds = leverageController.getUserActivePositions(user);
+uint256 liquidatedCount = leverageController.batchCheckLiquidations(requestIds, poolKey);
+```
+
+### Pool Configuration
+
+```solidity
+// Configure custom pool parameters
 leverageController.configurePool(
     poolKey,
-    true,      // active
-    5,         // max 5x leverage for this pool
-    8000,      // 80% max utilization
-    500        // 0.5% base fee
+    true,   // active
+    8,      // 8x max leverage
+    9000,   // 90% max utilization
+    250     // 0.25% base fee
 );
 ```
 
-### Test System
-```bash
-forge script script/TestLeverageSystem.s.sol --rpc-url $RPC_URL
+### Price Oracle Integration
+
+```solidity
+// Get real-time pool price
+uint256 currentPrice = leverageHook.getPoolPrice(poolKey);
+
+// Calculate position value
+uint256 positionValue = (position.outputTokenAmount * currentPrice) / position.openPrice;
 ```
 
-## Architecture Decisions
+## 🔍 Monitoring & Analytics
 
-### Why Uniswap V4 Hooks?
-- Atomic execution ensures borrowing and repayment happen in single transaction
-- Access to real-time pool prices and liquidity
-- Gas-efficient integration with existing DEX infrastructure
+### Position Tracking
 
-### Why Clone-based Wallets?
-- Significant gas savings for user onboarding
-- Standardized interface across all user wallets
-- Upgradeability through factory contract
+```solidity
+// Get all user positions
+bytes32[] memory positions = leverageController.getUserActivePositions(user);
 
-### Why Delegation-based Permissions?
-- Users maintain full custody of funds
-- Fine-grained control over trading permissions
-- Revocable access for enhanced security
+// Check position details
+for (uint i = 0; i < positions.length; i++) {
+    IInstantLeverageHook.LeveragePosition memory pos = leverageHook.getPosition(positions[i]);
+    (uint256 currentValue,,bool isHealthy, int256 pnl) =
+        leverageController.getPositionHealth(positions[i], currentPrice);
 
-## Gas Optimization
-
-- Clone pattern for wallet deployment
-- Batch operations for liquidations
-- Efficient storage layout in all contracts
-- Minimal external calls in critical paths
-
-## Testing
-
-Comprehensive test suite covers:
-- Happy path scenarios for all user flows
-- Edge cases and error conditions
-- Gas usage optimization
-- Security vulnerabilities
-
-Run tests:
-```bash
-forge test -vv
+    console.log("Position:", positions[i]);
+    console.log("Current Value:", currentValue);
+    console.log("P&L:", pnl);
+    console.log("Healthy:", isHealthy);
+}
 ```
 
-## Recent Fixes & Improvements
+### Pool Utilization
 
-### Compilation Issues Resolved
-- **Fixed duplicate interface declarations** - Created centralized `ILeverageInterfaces.sol`
-- **Resolved function visibility conflicts** - Corrected internal/external function calls
-- **Fixed Uniswap V4 integration** - Updated to use `StateLibrary.getSlot0` for pool price access
-- **Improved hook implementation** - Corrected override functions and selectors
+```solidity
+// Check pool lending status
+(uint256 totalLent, uint256 maxLendingLimit,, bool isActive) =
+    leverageHook.poolInfo(poolId);
 
-### Enhanced Security Features
-- **Added comprehensive input validation** throughout all contracts
-- **Implemented atomic execution safety** with proper try-catch patterns
-- **Enhanced price calculation accuracy** with fixed-point arithmetic
-- **Added batch liquidation processing** for gas efficiency
-- **Emergency controls** for position management
+uint256 utilizationRate = (totalLent * 10000) / maxLendingLimit; // basis points
+```
 
-### Gas Optimizations
-- **Internal function restructuring** for better gas efficiency
-- **Reduced external calls** in critical execution paths
-- **Optimized storage layout** in all contracts
+## 🚨 Common Issues & Solutions
 
-## Security Considerations
+### Issue: Transaction Reverts
 
-⚠️ **Important**: This is a demonstration system for ETHGlobal. Before mainnet deployment:
+**Cause**: Insufficient user balance or invalid delegation
 
-1. Complete professional security audit
-2. Implement formal verification for critical functions
-3. Add comprehensive monitoring and alerting
-4. Establish proper governance mechanisms
-5. Test thoroughly on testnets with various market conditions
-6. Verify all hook implementations with Uniswap V4 standards
+**Solution**:
+```solidity
+// Check user balance
+uint256 balance = UserWallet(userWallet).balances(tokenIn);
+require(balance >= baseAmount, "Insufficient balance");
 
-## License
+// Verify delegation
+(bool active, uint256 maxAmount, uint256 expiry) =
+    UserWallet(userWallet).delegations(delegationHash);
+require(active && block.timestamp < expiry, "Invalid delegation");
+```
+
+### Issue: Position Liquidated Unexpectedly
+
+**Cause**: High leverage with volatile price movements
+
+**Solution**:
+- Use lower leverage multipliers (2-3x instead of 10x)
+- Monitor position health regularly
+- Set up automated position management
+
+### Issue: Hook Address Mismatch
+
+**Cause**: Incorrect hook mining or deployment
+
+**Solution**:
+```bash
+# Re-mine hook address with correct parameters
+forge script script/DeployLeverageSystem.s.sol --broadcast
+```
+
+## 📊 Economics
+
+### Fee Structure
+
+- **Pool Fee**: 3% of profits go to liquidity providers
+- **User Profit**: 97% of profits go to users
+- **Base Fee**: Configurable per pool (typically 0.3-0.5%)
+
+### Example Trade Economics
+
+```
+Initial: 100 TEST0 (5x leverage = 500 TEST0 total)
+Pool provides: 400 TEST0 temporarily
+Swap: 500 TEST0 → 520 TEST1 (4% gain)
+Repay pool: 400 TEST0 equivalent + 3% fee
+User receives: ~116 TEST0 equivalent (16% gain on 100 TEST0)
+```
+
+## 🔗 Contract Addresses
+
+After deployment, update these addresses in your `.env`:
+
+```bash
+POOL_MANAGER_ADDRESS=0x...
+USER_WALLET_TEMPLATE_ADDRESS=0x...
+WALLET_FACTORY_ADDRESS=0x...
+INSTANT_LEVERAGE_HOOK_ADDRESS=0x...
+LEVERAGE_CONTROLLER_ADDRESS=0x...
+```
+
+## 📝 License
 
 MIT License - See LICENSE file for details.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add comprehensive tests
+4. Submit a pull request
+
+For questions or support, please open an issue on GitHub.

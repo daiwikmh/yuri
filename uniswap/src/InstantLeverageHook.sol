@@ -23,6 +23,7 @@ import "./ILeverageInterfaces.sol";
  * @notice Uniswap V4 hook for atomic leverage trading execution
  * @dev Enables borrowing from pools, executing leveraged trades, and immediate repayment
  */
+
 contract InstantLeverageHook is BaseHook, Ownable, ReentrancyGuard {
     using StateLibrary for IPoolManager;
     using SafeERC20 for IERC20;
@@ -85,17 +86,17 @@ contract InstantLeverageHook is BaseHook, Ownable, ReentrancyGuard {
 
     // ============ Constructor ============
     constructor(
-        IPoolManager _poolManager,
-        address _walletFactory,
-        address _leverageController,
-        address _poolFeeRecipient
-    ) BaseHook(_poolManager) Ownable(msg.sender) ReentrancyGuard() {
-        walletFactory = IWalletFactory(_walletFactory);
-        leverageController = ILeverageController(_leverageController);
-        poolFeeRecipient = _poolFeeRecipient;
-        authorizedPlatforms[_walletFactory] = true;
-        authorizedPlatforms[_leverageController] = true;
-    }
+    IPoolManager _poolManager,
+    address _walletFactory,
+    address _leverageController,
+    address _poolFeeRecipient
+) BaseHook(_poolManager) Ownable(_poolFeeRecipient) ReentrancyGuard() {
+    walletFactory = IWalletFactory(_walletFactory);
+    leverageController = ILeverageController(_leverageController);
+    poolFeeRecipient = _poolFeeRecipient;
+    authorizedPlatforms[_walletFactory] = true;
+    authorizedPlatforms[_leverageController] = true;
+}
 
     // ============ Hook Permissions ============
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {

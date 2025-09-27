@@ -14,13 +14,13 @@ deploy-lev:
 	forge script script/DeployLeverageSystem.s.sol:DeployLeverageSystem \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
-		--broadcast
+		--broadcast --via-ir
 
 check-compile:
 	forge script script/CheckCompilation.s.sol:CheckCompilation \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
-		--broadcast
+		--broadcast 
 token:
 	forge script script/ERC20.s.sol:Token \
 		--rpc-url $(RPC_URL) \

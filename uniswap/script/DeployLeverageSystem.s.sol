@@ -19,7 +19,6 @@ import "../src/LeverageController.sol";
  */
 contract DeployLeverageSystem is Script {
     address internal deployer;
-    address internal protocolOwner;
     
     // Contracts to deploy
     IPoolManager public poolManager;
@@ -33,129 +32,134 @@ contract DeployLeverageSystem is Script {
 
     function setUp() public {
         deployer = vm.rememberKey(vm.envUint("PRIVATE_KEY"));
-        protocolOwner = vm.rememberKey(vm.envUint("OWNER_PRIVATE_KEY"));
+        deployer = vm.rememberKey(vm.envUint("OWNER_PRIVATE_KEY"));
 
         vm.label(deployer, "Deployer");
-        vm.label(protocolOwner, "ProtocolOwner");
+        vm.label(deployer, "deployer");
 
         console.log("=== Leverage System Deployment Setup ===");
         console.log("Deployer:", deployer);
-        console.log("Protocol Owner:", protocolOwner);
+        console.log("Protocol Owner:", deployer);
     }
 
     function run() public {
-        console.log("=== Starting Leverage System Deployment ===");
-        vm.startBroadcast(deployer);
+    console.log("=== Starting Leverage System Deployment ===");
+    vm.startBroadcast(deployer);
 
-        // 1. Deploy PoolManager
-        console.log("1. Deploying PoolManager...");
+    // 1. Deploy PoolManager
+    poolManager = IPoolManager(0x00B036B58a818B1BC34d502D3fE730Db729e62AC);
 
-        PoolManager newPoolManager = new PoolManager(protocolOwner);
-        poolManager = IPoolManager(address(newPoolManager));
-        console.log("   PoolManager deployed at:", address(poolManager));
 
-        // 2. Deploy UserWallet template
-        console.log("2. Deploying UserWallet template...");
-        userWalletTemplate = new UserWallet();
-        console.log("   UserWallet template deployed at:", address(userWalletTemplate));
+  
 
-        // 3. Deploy WalletFactory
-        console.log("3. Deploying WalletFactory...");
-        walletFactory = new WalletFactory(payable(address(userWalletTemplate)));
-        console.log("   WalletFactory deployed at:", address(walletFactory));
+    // 2. Deploy UserWallet template
+    console.log("2. Deploying UserWallet template...");
+    userWalletTemplate = new UserWallet();
+    console.log("   UserWallet template deployed at:", address(userWalletTemplate));
 
-        // 4. Mine salt for InstantLeverageHook
-        console.log("4. Mining salt for InstantLeverageHook...");
-        uint160 flags = uint160(
-            Hooks.AFTER_INITIALIZE_FLAG |
-            Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
-            Hooks.AFTER_REMOVE_LIQUIDITY_FLAG |
-            Hooks.BEFORE_SWAP_FLAG |
-            Hooks.AFTER_SWAP_FLAG
-        );
-        console.log("   Required hook flags:", flags);
+    // 3. Deploy WalletFactory
+    console.log("3. Deploying WalletFactory...");
+    walletFactory = new WalletFactory(payable(address(userWalletTemplate)));
+    console.log("   WalletFactory deployed at:", address(walletFactory));
 
-        bytes memory constructorArgs = abi.encode(
-            address(poolManager),
-            address(walletFactory),
-            address(0), // leverageController (set later)
-            deployer    // poolFeeRecipient
-        );
-        
-        (address hookAddress, bytes32 salt) = HookMiner.find(
-            CREATE2_DEPLOYER,
-            flags,
-            type(InstantLeverageHook).creationCode,
-            constructorArgs
-        );
+    // 4. Mine salt for InstantLeverageHook
+    console.log("4. Mining salt for InstantLeverageHook...");
+    uint160 flags = uint160(
+        Hooks.AFTER_INITIALIZE_FLAG |
+        Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+        Hooks.AFTER_REMOVE_LIQUIDITY_FLAG |
+        Hooks.BEFORE_SWAP_FLAG |
+        Hooks.AFTER_SWAP_FLAG
+    );
+    console.log("   Required hook flags:", flags);
 
-        console.log("   Mined hook address:", hookAddress);
-        console.log("   Mined salt:", vm.toString(salt));
+    bytes memory constructorArgs = abi.encode(
+        address(poolManager),
+        address(walletFactory),
+        address(0), // leverageController (set later)
+        deployer    // poolFeeRecipient
+    );
+    
+    (address hookAddress, bytes32 salt) = HookMiner.find(
+        CREATE2_DEPLOYER,
+        flags,
+        type(InstantLeverageHook).creationCode,
+        constructorArgs
+    );
 
-        // Verify flags before deploy
-        uint160 ALL_HOOK_MASK = uint160((1 << 14) - 1);
-        uint160 addressFlags = uint160(hookAddress) & ALL_HOOK_MASK;
-        require(addressFlags == flags, "Hook flags verification failed");
-        console.log("   Hook flags verified successfully");
+    console.log("   Mined hook address:", hookAddress);
+    console.log("   Mined salt:", vm.toString(salt));
 
-        // 5. Deploy InstantLeverageHook with mined salt
-        console.log("5. Deploying InstantLeverageHook...");
-        leverageHook = new InstantLeverageHook{salt: salt}(
-            IPoolManager(address(poolManager)),
-            address(walletFactory),
-            address(0), // leverageController (set later)
-            deployer    // poolFeeRecipient
-        );
-        console.log("   InstantLeverageHook deployed at:", address(leverageHook));
+    // Verify flags before deploy
+    uint160 ALL_HOOK_MASK = uint160((1 << 14) - 1);
+    uint160 addressFlags = uint160(hookAddress) & ALL_HOOK_MASK;
+    require(addressFlags == flags, "Hook flags verification failed");
+    console.log("   Hook flags verified successfully");
 
-        // Verify hook deployment
-        require(address(leverageHook) == hookAddress, "Hook address mismatch");
-        uint160 deployedFlags = uint160(address(leverageHook)) & ALL_HOOK_MASK;
-        require(deployedFlags == flags, "Hook flags mismatch after deployment");
-        console.log("   Hook deployment verified successfully");
+    // 5. Deploy InstantLeverageHook with mined salt
+    console.log("5. Deploying InstantLeverageHook...");
+    leverageHook = new InstantLeverageHook{salt: salt}(
+        IPoolManager(address(poolManager)),
+        address(walletFactory),
+        address(0), // leverageController (set later)
+        deployer    // poolFeeRecipient
+    );
+    console.log("   InstantLeverageHook deployed at:", address(leverageHook));
 
-        // 6. Deploy LeverageController
-        console.log("6. Deploying LeverageController...");
-        leverageController = new LeverageController(
-            IPoolManager(address(poolManager)),
-            address(walletFactory),
-            address(leverageHook)
-        );
-        console.log("   LeverageController deployed at:", address(leverageController));
+    // Verify hook deployment
+    require(address(leverageHook) == hookAddress, "Hook address mismatch");
+    uint160 deployedFlags = uint160(address(leverageHook)) & ALL_HOOK_MASK;
+    require(deployedFlags == flags, "Hook flags mismatch after deployment");
+    console.log("   Hook deployment verified successfully");
 
-        // 7. Setup permissions
-        console.log("7. Setting up permissions...");
-        
-        // Authorize controller in hook
-        leverageHook.authorizePlatform(address(leverageController));
-        console.log("   Authorized LeverageController in hook");
+    // 6. Deploy LeverageController
+    console.log("6. Deploying LeverageController...");
+    leverageController = new LeverageController(
+        IPoolManager(address(poolManager)),
+        address(walletFactory),
+        address(leverageHook)
+    );
+    console.log("   LeverageController deployed at:", address(leverageController));
 
-        // Setup TEST0 and TEST1 tokens in WalletFactory
-        address TEST0 = 0x5c4B14CB096229226D6D464Cba948F780c02fbb7;
-        address TEST1 = 0x70bF7e3c25B46331239fD7427A8DD6E45B03CB4c;
+    // 7. Setup permissions
+    console.log("7. Setting up permissions...");
 
-        walletFactory.addToken(address(0)); // ETH
-        walletFactory.addToken(TEST0);
-        walletFactory.addToken(TEST1);
-        console.log("   Added ETH, TEST0, TEST1 to WalletFactory");
+    // Authorize controller in hook
+    leverageHook.authorizePlatform(address(leverageController));
+    console.log("   Authorized LeverageController in hook");
 
-        // Set leverage hook in controller
-        leverageController.setLeverageHook(address(leverageHook));
-        console.log("   Set leverage hook in controller");
+    // Set leverage hook in controller
+    leverageController.setLeverageHook(address(leverageHook));
+    console.log("   Set leverage hook in controller");
 
-        vm.stopBroadcast();
+    // Transfer ownership to deployer
+    console.log("8. Transferring ownership...");
+    leverageHook.transferOwnership(deployer);
+    leverageController.transferOwnership(deployer);
+    console.log("   Transferred ownership to deployer");
 
-        // 8. Configure initial pool for leverage trading (if needed)
-        console.log("8. Pool configuration ready (configure manually after deployment)");
-        console.log("   Use LeverageController.configurePool() to enable leverage on specific pools");
-        console.log("   Example: configurePool(poolKey, true, 5, 8000, 500) for 5x leverage, 80% utilization");
+    // Setup tokens
+    console.log("9. Setting up tokens...");
+    address TEST0 = 0x5c4B14CB096229226D6D464Cba948F780c02fbb7;
+    address TEST1 = 0x70bF7e3c25B46331239fD7427A8DD6E45B03CB4c;
 
-        // 9. Save deployment addresses
-        _saveAddresses();
+    walletFactory.addToken(address(0)); // ETH
+    walletFactory.addToken(TEST0);
+    walletFactory.addToken(TEST1);
+    console.log("   Added ETH, TEST0, TEST1 to WalletFactory");
 
-        console.log("=== Leverage System Deployment Complete ===");
-        _printDeploymentSummary();
-    }
+    vm.stopBroadcast();
+
+    // Configure pool
+    console.log("10. Pool configuration ready (configure manually after deployment)");
+    console.log("   Use LeverageController.configurePool() to enable leverage on specific pools");
+
+    // Save deployment addresses
+    _saveAddresses();
+
+    console.log("=== Leverage System Deployment Complete ===");
+    _printDeploymentSummary();
+}
 
     function _saveAddresses() internal {
         string memory addresses = string.concat(
@@ -167,8 +171,7 @@ contract DeployLeverageSystem is Script {
             "LEVERAGE_CONTROLLER_ADDRESS=", vm.toString(address(leverageController)), "\n"
         );
 
-        vm.writeFile("deployed-addresses.env", addresses);
-        console.log("   Contract addresses saved to deployed-addresses.env");
+    
     }
 
     function _printDeploymentSummary() internal view {

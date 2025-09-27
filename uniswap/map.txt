@@ -1,0 +1,34 @@
+Leverage System Deployment Setup ===
+  Deployer: 0xC4Fe13e473E6aD2BB0Ba8a365Bf581080d92dB18
+  Protocol Owner: 0xC4Fe13e473E6aD2BB0Ba8a365Bf581080d92dB18
+  === Starting Leverage System Deployment ===
+  2. Deploying UserWallet template...
+     UserWallet template deployed at: 0x21d6047173a1CE72A6769f620feD45e11EEFF608
+  3. Deploying WalletFactory...
+     WalletFactory deployed at: 0xA78f2b8E27E7048Cb2D2c4AC679819989aE98134
+  4. Mining salt for InstantLeverageHook...
+     Required hook flags: 5056
+     Mined hook address: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
+     Mined salt: 0x0000000000000000000000000000000000000000000000000000000000001d74
+     Hook flags verified successfully
+  5. Deploying InstantLeverageHook...
+     InstantLeverageHook deployed at: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
+     Hook deployment verified successfully
+  6. Deploying LeverageController...
+     LeverageController deployed at: 0xdD55A04AdFD14122c92C0d92D37137fD414E9d1a
+  7. Setting up permissions...
+     Authorized LeverageController in hook
+     Set leverage hook in controller
+  8. Transferring ownership...
+     Transferred ownership to deployer
+  9. Setting up tokens...
+     Added ETH, TEST0, TEST1 to WalletFactory
+  10. Pool configuration ready (configure manually after deployment)
+     Use LeverageController.configurePool() to enable leverage on specific pools
+  === Leverage System Deployment Complete ===
+  === Deployment Summary ===
+  PoolManager: 0x00B036B58a818B1BC34d502D3fE730Db729e62AC
+  UserWallet Template: 0x21d6047173a1CE72A6769f620feD45e11EEFF608
+  WalletFactory: 0xA78f2b8E27E7048Cb2D2c4AC679819989aE98134
+  InstantLeverageHook: 0x8fa16CaB5C983aaf4f721D301bd643aF121053c0
+  LeverageController: 0xdD55A04AdFD14122c92C0d92D37137fD414E9d1a

@@ -23,8 +23,8 @@ contract CheckSizes is Script {
         console.log("Size limit: 24,576 bytes");
         console.log("If any contract exceeds this, further optimization needed");
         console.log("");
-        console.log("Next: Deploy with the two-step process:");
-        console.log("1. forge script script/DeployPoolManager.s.sol --broadcast");
-        console.log("2. forge script script/DeployLeverageSystem.s.sol --broadcast");
+        console.log("Next: Deploy with the complete process:");
+        console.log("1. forge script script/DeployLeverageSystem.s.sol --broadcast");
+        console.log("2. forge script script/ConfigurePools.s.sol --broadcast");
     }
 }
