@@ -48,13 +48,8 @@ contract CrossPoolLeverageTrading is Script {
         leverageHook = InstantLeverageHook(INSTANT_LEVERAGE_HOOK);
         walletFactory = leverageController.walletFactory();
 
-        // Load AssetManager from env if deployed
-        try vm.envAddress("ASSET_MANAGER_ADDRESS") returns (address addr) {
-            assetManager = AssetManager(payable(addr));
-        } catch {
-            console.log(" ASSET_MANAGER_ADDRESS not set in .env");
-            console.log("   Run: make deploy-asset-manager first");
-        }
+        // Load AssetManager - use deployed address
+        assetManager = AssetManager(payable(0x63f7F33feC7d640F05817f77C1B8C0Df03C300CE));
 
         console.log("=== Cross-Pool Leverage Trading System ===");
         console.log("User:", user);

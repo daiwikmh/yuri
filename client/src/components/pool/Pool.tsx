@@ -69,7 +69,7 @@ export default function Pool() {
     try {
       console.log("createPoolOnServer", newPool);
       await createPoolOnServer(newPool);
-      console.log("✅ Pool stored on server");
+      console.log(" Pool stored on server");
       mutate();
     } catch {
       window.alert("Failed to save pool on server (check console)");

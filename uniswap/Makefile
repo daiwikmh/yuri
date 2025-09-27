@@ -18,12 +18,6 @@ deploy-lev:
 		--private-key $(PRIVATE_KEY) \
 		--broadcast --via-ir
 
-check-compile:
-	forge script script/CheckCompilation.s.sol:CheckCompilation \
-		--rpc-url $(RPC_URL) \
-		--private-key $(PRIVATE_KEY) \
-		--broadcast 
-
 liquid:
 	forge script script/AddLiquidity.s.sol:AddLiquidity \
 		--rpc-url $(RPC_URL) \
@@ -83,9 +77,14 @@ setup-cross-pool:
 
 # Execute cross-pool leverage trade (usage: make cross-pool-trade AMOUNT=100 LEVERAGE=5)
 cross-pool-trade:
+	@if [ -z "$(AMOUNT)" ] || [ -z "$(LEVERAGE)" ]; then \
+		echo "Error: Please provide AMOUNT and LEVERAGE"; \
+		echo "Usage: make cross-pool-trade AMOUNT=100 LEVERAGE=2"; \
+		exit 1; \
+	fi
 	@echo "=== Executing Cross-Pool Leverage Trade: $(AMOUNT) Token A with $(LEVERAGE)x leverage ==="
 	forge script script/CrossPoolLeverageTrading.s.sol:CrossPoolLeverageTrading \
-		--sig "executeCrossPoolTrade(uint256,uint8)" $(shell echo "$(AMOUNT) * 10^18" | bc) $(LEVERAGE) \
+		--sig "executeCrossPoolTrade(uint256,uint8)" $(AMOUNT)000000000000000000 $(LEVERAGE) \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
 		--broadcast --via-ir

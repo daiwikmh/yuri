@@ -148,7 +148,7 @@ contract AddLiquidityAC is Script {
 
         // Step 1: Approve Permit2 on both tokens
         console.log("Step 1: Approving Permit2 on tokens...");
-        // IERC20(token0).approve(PERMIT2_ADDRESS, type(uint256).max);
+        IERC20(token0).approve(PERMIT2_ADDRESS, type(uint256).max);
         IERC20(token1).approve(PERMIT2_ADDRESS, type(uint256).max);
 
         // Step 2: Approve Position Manager as spender on Permit2
