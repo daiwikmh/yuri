@@ -21,13 +21,15 @@ check-compile:
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
 		--broadcast 
+
+create-pool:
+	forge script script/ConfigurePools.s.sol:ConfigurePools \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
 token:
 	forge script script/ERC20.s.sol:Token \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
 		--broadcast
 
-help:
-	@echo "make create-wallet   -> Run CreateWallet script"
-	@echo "make deploy-contract -> Run DeployContract script"
-	@echo "make token           -> Run ERC20 Token script"
