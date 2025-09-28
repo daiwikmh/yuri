@@ -20,6 +20,12 @@ import "./ILeverageInterfaces.sol";
 import "./WalletFactory.sol";
 import "./LeverageController.sol";
 
+// Interface for v4 Position Manager
+interface IPositionManager {
+    function multicall(bytes[] calldata data) external payable returns (bytes[] memory results);
+    function modifyLiquidities(bytes calldata unlockData, uint256 deadline) external payable;
+}
+
 contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
     using SafeERC20 for IERC20;
     using StateLibrary for IPoolManager;
@@ -30,6 +36,7 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
 
     ILeverageController public leverageController;
     IWalletFactory public walletFactory;
+    IPositionManager public positionManager;
 
     mapping(bytes32 => CrossPoolPosition) public crossPoolPositions;
     mapping(address => bytes32[]) public userCrossPoolPositions;
@@ -69,7 +76,9 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
     }
 
     modifier validPosition(bytes32 positionId) {
-        require(crossPoolPositions[positionId].isActive, "Invalid position");
+        CrossPoolPosition storage pos = crossPoolPositions[positionId];
+        require(pos.user != address(0), "Position does not exist");
+        require(pos.isActive, "Position is not active");
         _;
     }
 
@@ -92,7 +101,6 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
         positionId = keccak256(abi.encodePacked(params.user, params.tokenA, params.tokenC, block.timestamp, block.number));
         IERC20(params.tokenA).safeTransferFrom(params.user, address(this), params.collateralAmount);
 
-        // Use safe math to prevent overflow
         require(params.leverage > 1, "Leverage must be greater than 1");
         require(params.collateralAmount <= type(uint128).max, "Collateral amount too large");
 
@@ -102,12 +110,12 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
 
         uint256 leverageAmount = params.collateralAmount * leverageMultiplier;
         require(leverageAmount <= type(uint128).max, "Borrow amount too large");
-        uint256 borrowedTokens = _borrowLiquidityFromPool(params.borrowPool, leverageAmount);
-        // Safe addition check
-        require(params.collateralAmount <= type(uint256).max - borrowedTokens, "Total amount would overflow");
-        uint256 totalTokenA = params.collateralAmount + borrowedTokens;
 
-        uint256 tokenCReceived = _executeSwap(params.tradingPool, params.tokenA, params.tokenC, totalTokenA);
+        uint256 borrowedTokenB = _borrowLiquidityFromPool(params.borrowPool, leverageAmount);
+
+        
+        uint256 totalValue = params.collateralAmount + borrowedTokenB;
+        uint256 tokenCReceived = _executeSwap(params.tradingPool, params.tokenA, params.tokenC, totalValue);
         require(tokenCReceived >= params.minTokenCAmount, "Insufficient output");
 
         CrossPoolPosition memory position = CrossPoolPosition({
@@ -120,7 +128,7 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
             tokenB: params.tokenB,
             tokenC: params.tokenC,
             collateralAmount: params.collateralAmount,
-            borrowedLiquidity: borrowedTokens,
+            borrowedLiquidity: borrowedTokenB,
             tokenCHolding: tokenCReceived,
             leverage: params.leverage,
             openPrice: _getPoolPrice(params.tradingPool),
@@ -128,9 +136,14 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
             isActive: true
         });
 
+        // Store position in mappings
         crossPoolPositions[positionId] = position;
         userCrossPoolPositions[params.user].push(positionId);
-        positionBorrowedLiquidity[positionId] = borrowedTokens;
+        positionBorrowedLiquidity[positionId] = borrowedTokenB;
+
+        // Verify position was stored correctly
+        require(crossPoolPositions[positionId].positionId == positionId, "Position storage failed");
+        require(crossPoolPositions[positionId].isActive == true, "Position not marked active");
 
         emit CrossPoolPositionOpened(positionId, params.user, params.leverage, tokenCReceived);
         return positionId;
@@ -173,9 +186,9 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
     }
 
     function _borrowLiquidityFromPool(PoolKey memory poolKey, uint256 tokenAmount) internal returns (uint256 liquidityBorrowed) {
-        // Simplified borrowing - just return a small fixed amount for now
-        // This avoids complex unlock operations that cause SafeCast issues
-        liquidityBorrowed = 1000; // Very small fixed amount
+        // Simplified borrowing for demo - return proportional amount representing Token B borrowed
+        // In real implementation, this would borrow Token B from Pool A/B using Token A collateral
+        liquidityBorrowed = tokenAmount; // For demo: 1:1 ratio A to B
 
         PoolId poolId = poolKey.toId();
         poolBorrowedLiquidity[poolId] += liquidityBorrowed;
@@ -222,6 +235,24 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, SafeCallback {
     function isPositionActive(bytes32 positionId) external view returns (bool) {
         return crossPoolPositions[positionId].isActive;
     }
+
+    function debugPosition(bytes32 positionId) external view returns (
+        bool exists,
+        bool isActive,
+        address user,
+        uint256 collateralAmount,
+        uint256 borrowedLiquidity,
+        uint256 tokenCHolding
+    ) {
+        CrossPoolPosition memory pos = crossPoolPositions[positionId];
+        exists = pos.positionId != bytes32(0);
+        isActive = pos.isActive;
+        user = pos.user;
+        collateralAmount = pos.collateralAmount;
+        borrowedLiquidity = pos.borrowedLiquidity;
+        tokenCHolding = pos.tokenCHolding;
+    }
+    
 
     function _unlockCallback(bytes calldata data) internal override returns (bytes memory) {
         // Simplified callback - not using unlock operations anymore

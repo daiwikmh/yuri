@@ -24,7 +24,6 @@ import "../src/ILeverageInterfaces.sol";
  * @notice Execute cross-pool leverage trades: Pool A/B (borrow) + Pool A/C (trade)
  */
 contract CrossPoolLeverageTrading is Script {
-    // Load addresses from environment
     address leverageControllerAddr;
     address instantLeverageHookAddr;
     address poolManagerAddr;
@@ -32,7 +31,6 @@ contract CrossPoolLeverageTrading is Script {
     address test1Addr; // Token B
     address test2Addr; // Token C
 
-    // Contract instances
     AssetManagerFixed public assetManager;
     IWalletFactory public walletFactory;
     LeverageController public leverageController;
@@ -44,7 +42,6 @@ contract CrossPoolLeverageTrading is Script {
     function setUp() public {
         user = vm.rememberKey(vm.envUint("PRIVATE_KEY"));
 
-        // Load addresses from environment
         leverageControllerAddr = vm.envAddress("LEVERAGE_CONTROLLER_ADDRESS");
         instantLeverageHookAddr = vm.envAddress("INSTANT_LEVERAGE_HOOK_ADDRESS");
         poolManagerAddr = vm.envAddress("POOL_MANAGER_ADDRESS");
@@ -52,7 +49,6 @@ contract CrossPoolLeverageTrading is Script {
         test1Addr = vm.envAddress("TEST1_ADDRESS");
         test2Addr = vm.envAddress("TEST2_ADDRESS");
 
-        // Connect to deployed contracts
         leverageController = LeverageController(leverageControllerAddr);
         leverageHook = InstantLeverageHook(instantLeverageHookAddr);
         walletFactory = leverageController.walletFactory();
@@ -69,7 +65,6 @@ contract CrossPoolLeverageTrading is Script {
     function run() public {
         vm.startBroadcast(user);
 
-        // Setup user wallet
         _setupUserWallet();
 
         // Deposit tokens for trading
@@ -87,7 +82,6 @@ contract CrossPoolLeverageTrading is Script {
     }
 
     function _setupUserWallet() internal {
-        // Check if user has existing wallet
         try walletFactory.userAccounts(user) returns (
             address payable walletAddress,
             bool exists,
@@ -129,12 +123,10 @@ contract CrossPoolLeverageTrading is Script {
         console.log("  Leverage: %s x", leverage);
         console.log("  Strategy: A/B (borrow) + A/C (trade)");
 
-        // Setup user wallet if not already set
         if (userWallet == address(0)) {
             _setupUserWallet();
         }
 
-        // Create pool keys with proper currency ordering
         address token0_AB = test0Addr < test1Addr ? test0Addr : test1Addr;
         address token1_AB = test0Addr < test1Addr ? test1Addr : test0Addr;
         address token0_AC = test0Addr < test2Addr ? test0Addr : test2Addr;
@@ -156,10 +148,8 @@ contract CrossPoolLeverageTrading is Script {
             hooks: IHooks(address(leverageHook))
         });
 
-        // Pools are already initialized, proceed directly with trade
         console.log("Using existing initialized pools");
 
-        // Prepare cross-pool trade parameters
         ICrossPoolAssetManager.CrossPoolTradeParams memory params = ICrossPoolAssetManager.CrossPoolTradeParams({
             user: user,
             userWallet: userWallet,
@@ -173,12 +163,10 @@ contract CrossPoolLeverageTrading is Script {
             minTokenCAmount: (collateralAmount * 95) / 100 // Realistic expectation for simplified swap
         });
 
-        // Approve AssetManager to spend collateral tokens from user wallet
         console.log("Approving AssetManager for collateral...");
         IERC20(test0Addr).approve(address(assetManager), collateralAmount);
         console.log("Approval set for %s tokens", collateralAmount / (10 ** decimals));
 
-        // Execute cross-pool trade
         positionId = assetManager.executeCrossPoolTrade(params);
         console.log("Cross-pool position opened: %s", vm.toString(positionId));
 
@@ -195,12 +183,10 @@ contract CrossPoolLeverageTrading is Script {
 
         console.log("Closing Cross-Pool Position: %s", vm.toString(positionId));
 
-        // Setup user wallet if not already set
         if (userWallet == address(0)) {
             _setupUserWallet();
         }
 
-        // Get initial balance
         uint256 initialBalance = IERC20(test0Addr).balanceOf(userWallet);
         uint8 decimals = IERC20Metadata(test0Addr).decimals();
 
