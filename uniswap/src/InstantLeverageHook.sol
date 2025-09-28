@@ -286,19 +286,40 @@ contract InstantLeverageHook is BaseHook, Ownable, ReentrancyGuard {
         address token,
         uint256 amount
     ) internal returns (uint256 borrowed) {
+        // Get available liquidity and use a smaller, safer fraction
+        PoolId pid = PoolId.wrap(keccak256(abi.encode(poolKey)));
+        uint128 availableLiquidity = poolManager.getLiquidity(pid);
+
+        // Use at most 1% of available liquidity, scaled by requested amount
+        uint256 liquidityToRemove = availableLiquidity > 0 ?
+            (uint256(availableLiquidity) / 100) : 1000;
+
+        // Scale down for smaller amounts
+        if (amount < 1e18 && availableLiquidity > 0) {
+            liquidityToRemove = (liquidityToRemove * amount) / 1e18;
+        }
+
+        // Ensure minimum and maximum bounds
+        if (liquidityToRemove < 1000) liquidityToRemove = 1000;
+        if (liquidityToRemove > uint256(availableLiquidity) / 20) {
+            liquidityToRemove = uint256(availableLiquidity) / 20;
+        }
+
         ModifyLiquidityParams memory params = ModifyLiquidityParams({
             tickLower: -887220,
             tickUpper: 887220,
-            liquidityDelta: -int256(amount),
+            liquidityDelta: -int256(liquidityToRemove),
             salt: 0
         });
 
         (BalanceDelta delta,) = poolManager.modifyLiquidity(poolKey, params, "");
         int128 amount0 = delta.amount0();
         int128 amount1 = delta.amount1();
+
+        // Fix SafeCast overflow by properly handling negative values
         borrowed = token < Currency.unwrap(poolKey.currency1) ?
-            (amount0 < 0 ? uint256(uint128(-amount0)) : uint256(uint128(amount0))) :
-            (amount1 < 0 ? uint256(uint128(-amount1)) : uint256(uint128(amount1)));
+            (amount0 < 0 ? uint256(-int256(amount0)) : uint256(int256(amount0))) :
+            (amount1 < 0 ? uint256(-int256(amount1)) : uint256(int256(amount1)));
 
         // Update pool lending state
         bytes32 poolId = _getPoolId(poolKey);

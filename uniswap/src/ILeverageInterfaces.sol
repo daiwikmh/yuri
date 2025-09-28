@@ -10,6 +10,7 @@ interface IWalletFactory {
     function createUserAccount() external returns (address payable userWallet);
     function addToken(address token) external;
     function allowedTokens(address token) external view returns (bool);
+    function depositFunds(address token, uint256 amount) external;
 }
 
 interface IUserWallet {
@@ -151,7 +152,6 @@ interface ICrossPoolAssetManager {
         uint256 collateralAmount;
         uint256 leverage;
         uint256 minTokenCAmount;
-        uint256 deadline;
     }
 
     struct CrossPoolPosition {

@@ -42,7 +42,7 @@ token:
 		--broadcast --via-ir
 
 # Initialize Pool A/C (TEST0/TEST2)
-initialize-pool-ac:
+initialize-ac:
 	forge script script/InitializePoolAC.s.sol:InitializePoolAC \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
@@ -80,7 +80,7 @@ setup-cross-pool:
 cross-pool-trade:
 	@if [ -z "$(AMOUNT)" ] || [ -z "$(LEVERAGE)" ]; then \
 		echo "Error: Please provide AMOUNT and LEVERAGE"; \
-		echo "Usage: make cross-pool-trade AMOUNT=100 LEVERAGE=2"; \
+		echo "Usage: make cross-pool-trade AMOUNT=1 LEVERAGE=2"; \
 		exit 1; \
 	fi
 	@echo "=== Executing Cross-Pool Leverage Trade: $(AMOUNT) Token A with $(LEVERAGE)x leverage ==="
@@ -97,6 +97,15 @@ check-cross-pool-position:
 		--sig "checkCrossPoolPosition(bytes32)" $(POSITION_ID) \
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY)
+
+# List user positions
+list-positions:
+	@echo "=== Listing User Cross-Pool Positions ==="
+	forge script script/CrossPoolLeverageTrading.s.sol:CrossPoolLeverageTrading \
+		--sig "listUserPositions()" \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast --via-ir
 
 # Close cross-pool position (usage: make close-cross-pool-position POSITION_ID=0x...)
 close-cross-pool-position:
@@ -141,4 +150,3 @@ help:
 	@echo "🛠️ UTILITIES:"
 	@echo "make token              -> Deploy test tokens"
 	@echo "make check-compile      -> Check contract compilation"
-

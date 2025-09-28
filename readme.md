@@ -1,61 +1,257 @@
-I'm building a Uniswap V4 leverage trading ecosystem with the following architecture:
+# YURI
 
-## System Overview
-A leverage trading platform where users execute leveraged trades on TEST0/TEST1 pools, with temporary liquidity borrowed from the same pools they're trading on.
+## 🎯 Project Overview
 
-## Trading Flow Example
-1. User deposits 100 TEST0 to their UserWallet
-2. User requests 5x leverage trade: TEST0 → TEST1 on TEST0/TEST1 pool
-3. System borrows 400 TEST0 from the TEST0/TEST1 pool temporarily
-4. Executes 500 TEST0 → TEST1 swap on the same pool
-5. Immediately repays pool 400 TEST0 equivalent + fees
-6. User receives leveraged TEST1 position
+A sophisticated leverage trading system built on Uniswap V4 that enables atomic cross-pool leverage trading with automated position management. The system allows users to borrow liquidity from one pool, execute leveraged trades in another pool, and maintain positions with built-in liquidation protection.
 
-## Contract Architecture
+## 🏗️ System Architecture
 
-### 1. WalletFactory.sol & UserWallet.sol (Existing)
-- Non-custodial fund management with delegation
-- Supports TEST0 (0x5c4B14CB096229226D6D464Cba948F780c02fbb7),
- TEST1 (0x70bF7e3c25B46331239fD7427A8DD6E45B03CB4c), ETH
+### Core Contracts
 
-### 2. InstantLeverageHook.sol
-- Uniswap V4 hook for atomic leverage execution
-- Borrows from pool → combines with user funds → executes swap → repays pool
-- Profit distribution: 3% to pool, 97% to user
-- Auto-liquidation when position value ≤ 1/leverage of initial notional
-- Real-time pricing from the same pool being traded on
+| Contract | Address (Unichain Sepolia) | Description |
+|----------|----------------------------|-------------|
+| **PoolManager** | `0x00B036B58a818B1BC34d502D3fE730Db729e62AC` | Uniswap V4 core pool manager |
+| **PositionManager** | `0xf969Aee60879C54bAAed9F3eD26147Db216Fd664` | Manages liquidity positions |
+| **InstantLeverageHook** | `0x3143D8279c90DdFAe5A034874C5d232AF88b03c0` | Custom hook for leverage trading |
+| **LeverageController** | `0x725212999a45ABCb651A84b96C70438C6c1d7c43` | Orchestrates leverage operations |
+| **AssetManager** | `0x728efba937de96744004290cbea4f4f7563ba0c0` | Cross-pool position management |
 
-### 3. LeverageController.sol
-- Orchestrates user requests with hook execution
-- Position lifecycle management and risk validation
-- Pool configuration and leverage limits
+### Token Contracts
 
-### 4. Pool Integration Details
-- TEST0/TEST1 pool serves dual purpose: trading venue + liquidity source
-- Hook temporarily removes liquidity (borrows) → executes trade → repays
-- Price discovery from pool's sqrtPriceX96 for position valuation
-- Pool earns fees on both the leverage provision and the actual trade
+| Token | Address (Unichain Sepolia) | Symbol | Purpose |
+|-------|----------------------------|---------|---------|
+| **TEST0** | `0xB08D5e594773C55b2520a646b4EB3AA5fA08aF21` | TEST0 | Collateral token (Token A) |
+| **TEST1** | `0xe3A426896Ca307c3fa4A818f2889F44582460954` | TEST1 | Bridge token (Token B) |
 
-## Key Technical Challenges
-1. Atomic execution: borrow → trade → repay must succeed or revert entirely
-2. Pool price calculation from sqrtPriceX96 for position tracking
-3. Hook permission mining for correct address flags
-4. Circular dependency: getting prices from pool we're borrowing from
-5. Position health monitoring using real-time pool prices
+### Pool Information
 
-## Current Issues
-- Missing `getPoolPrice` in IInstantLeverageHook interface
-- Function visibility conflicts between contracts
-- Need proper sqrtPriceX96 → price conversion
-- Hook deployment salt mining
-- Testing atomic execution safety
+| Pool | Tokens | Status | Liquidity Position |
+|------|--------|--------|--------------------|
+| **Pool A/B** | TEST0/TEST1 | ✅ Active | Position #5598 (50 tokens each) |
+| **Pool B/C** | TEST1/TEST2 | 🚧 Pending | To be deployed |
 
-## Request
-Help me build a robust leverage ecosystem where:
-- Users trade on TEST0/TEST1 pools with borrowed liquidity from same pools
-- All operations are atomic and safe
-- Real-time position monitoring using pool prices
-- Automatic profit/loss distribution
-- Clean contract interactions and gas optimization
+## 🚀 Key Features
 
-Focus on the circular nature of using pools for both trading and liquidity provision, ensuring no conflicts arise from this dual usage pattern.
+### InstantLeverageHook
+A Uniswap V4 hook that enables atomic leverage trading with the following capabilities:
+
+- **Atomic Execution**: All leverage operations happen in a single transaction
+- **Cross-Pool Borrowing**: Borrow liquidity from Pool A/B to trade in Pool B/C
+- **Position Management**: Automated tracking of leveraged positions
+- **Liquidation Protection**: Built-in liquidation mechanism to protect pool liquidity
+- **Hook Permissions**:
+  - `beforeSwap` & `afterSwap`: Handle leverage trade execution
+  - `beforeRemoveLiquidity` & `afterRemoveLiquidity`: Enable pool borrowing
+
+### Key Parameters
+- **Maximum Leverage**: 10x global limit
+- **Pool Fee**: 3% on leverage operations
+- **User Profit Share**: 97% of profits to user
+- **Liquidation Threshold**: Dynamic based on leverage multiplier
+
+## 💡 Use Cases
+
+### 1. **Leveraged Token Exposure**
+- Users can gain leveraged exposure to Token C using Token A as collateral
+- Leverage multipliers from 1x to 10x
+- Atomic execution reduces slippage and MEV risks
+
+### 2. **Cross-Pool Arbitrage**
+- Exploit price differences between Pool A/B and Pool B/C
+- Automated borrowing and repayment mechanism
+- Capital efficient trading strategies
+
+### 3. **Yield Amplification**
+- Amplify returns on token price movements
+- Automated position management reduces manual intervention
+- Built-in risk management through liquidation protection
+
+## 🔄 How It Works
+
+### Cross-Pool Leverage Flow
+
+```
+User Input: 100 TEST0 + 2x Leverage
+│
+├─ Step 1: Pool A/B Borrowing
+│  ├─ Collateral: 100 TEST0
+│  ├─ Borrow: 100 TEST1 (Token B)
+│  └─ Total Power: 200 TEST1 equivalent
+│
+├─ Step 2: Pool B/C Trading
+│  ├─ Trade: 200 TEST1 → TEST2
+│  ├─ Output: ~200 TEST2 (Token C)
+│  └─ Position: 2x leveraged TEST2 exposure
+│
+├─ Step 3: Position Management
+│  ├─ AssetManager holds TEST2
+│  ├─ Monitor liquidation threshold
+│  └─ Auto-liquidate if needed
+│
+└─ Step 4: Position Closure
+   ├─ Trade: TEST2 → TEST1
+   ├─ Repay: 100 TEST1 + fees to Pool A/B
+   ├─ Convert: Remaining TEST1 → TEST0
+   └─ Result: Profit/Loss in TEST0
+```
+
+### Smart Contract Interactions
+
+1. **LeverageController**: Receives user requests and orchestrates the flow
+2. **InstantLeverageHook**: Executes leverage logic during pool operations
+3. **AssetManager**: Manages cross-pool positions and Token C holdings
+4. **PoolManager**: Handles all Uniswap V4 pool interactions
+
+## 🛠️ Technical Implementation
+
+### Hook Architecture
+```solidity
+contract InstantLeverageHook is BaseHook, Ownable, ReentrancyGuard {
+    // Core leverage execution in beforeSwap hook
+    function _beforeSwap(...) internal override returns (...) {
+        if (hookData.length > 0 && authorizedPlatforms[sender]) {
+            InstantLeverageRequest memory request = abi.decode(hookData, (InstantLeverageRequest));
+            _handleLeverageRequest(key, request);
+        }
+    }
+
+    // Pool borrowing via liquidity removal
+    function _borrowFromPool(...) internal returns (uint256 borrowed) {
+        // Remove liquidity to borrow tokens
+        // Execute with safety checks and limits
+    }
+}
+```
+
+### Position Management
+```solidity
+struct LeveragePosition {
+    address user;
+    address userWallet;
+    address tokenIn;
+    address tokenOut;
+    uint256 initialNotional;
+    uint256 userContribution;
+    uint256 leverageAmount;
+    uint256 leverageMultiplier;
+    uint256 outputTokenAmount;
+    uint256 openPrice;
+    uint256 liquidationThreshold;
+    uint256 openTimestamp;
+    bool isOpen;
+}
+```
+
+## 📊 Current Status
+
+### ✅ Completed
+- Core contracts deployed and verified
+- Pool A/B created with initial liquidity
+- Hook permissions configured
+- Basic leverage trading functionality
+- Position tracking and management
+
+### 🚧 In Progress
+- Pool B/C deployment and configuration
+- Cross-pool trading integration
+- Frontend interface development
+- Comprehensive testing suite
+
+### 🔮 Planned
+- Advanced liquidation strategies
+- Multi-token support
+- Governance token integration
+- Yield farming mechanisms
+
+## 🧪 Testing & Development
+
+### Prerequisites
+```bash
+# Install Foundry
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+
+# Clone repository
+git clone <repository-url>
+cd uniswap
+
+# Install dependencies
+forge install
+```
+
+### Deployment Commands
+```bash
+# Deploy core system
+make deploy-lev
+
+# Configure pools
+make create-pool
+
+# Initialize pools
+make initialize
+
+# Add liquidity
+make liquid
+
+# Deploy AssetManager
+make deploy-asset-manager
+```
+
+### Testing
+```bash
+# Run all tests
+forge test
+
+# Test specific functionality
+forge test --match-test testLeverageExecution
+
+# Gas optimization tests
+forge test --gas-report
+```
+
+## 🔐 Security Features
+
+### Access Control
+- Owner-only admin functions
+- Authorized platform system
+- Reentrancy protection on all external calls
+
+### Risk Management
+- Maximum leverage limits (10x global)
+- Dynamic liquidation thresholds
+- Pool utilization limits (80% max)
+- Emergency pause functionality
+
+### Audit Considerations
+- All external calls protected by reentrancy guards
+- Proper handling of negative BalanceDelta values
+- SafeERC20 usage for all token transfers
+- Comprehensive input validation
+
+## 📚 Additional Resources
+
+### Documentation
+- [Cross-Pool Leverage System Details](./uniswap/CROSS_POOL_LEVERAGE_SYSTEM.md)
+- [Deployment Flow Guide](./uniswap/DEPLOYMENT_FLOW.md)
+- [Frontend Integration](./uniswap/FRONTEND_FLOW_FUNCTIONS.md)
+
+### Links
+- **Uniswap V4 Docs**: https://docs.uniswap.org/contracts/v4/overview
+- **Unichain Sepolia Explorer**: https://sepolia.explorer.unichain.org/
+- **Foundry Documentation**: https://book.getfoundry.sh/
+
+## 🤝 Contributing
+
+This project was built for ETHGlobal hackathon. Contributions welcome for:
+- Additional token pair support
+- Frontend improvements
+- Testing enhancements
+- Documentation updates
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
+
+---
+
+**Built with ❤️ using Uniswap V4 + Foundry + Solidity**

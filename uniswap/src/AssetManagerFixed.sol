@@ -19,17 +19,13 @@ import "./ILeverageInterfaces.sol";
 import "./WalletFactory.sol";
 import "./LeverageController.sol";
 
-/**
- * @title AssetManagerFixed
- * @notice Cross-pool leverage using poolManager.modifyLiquidity for borrowing/repaying
- * @dev Flow: Pool A/B (borrow liquidity) → Trade A→B → Pool A/C (trade B→C) → Hold C for user
- */
 contract AssetManagerFixed is ReentrancyGuard, Ownable, IUnlockCallback {
     using SafeERC20 for IERC20;
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
 
-    // ============ State Variables ============
+    uint256 private constant MAX_INT128 = 170141183460469231731687303715884105727;
+
     IPoolManager public immutable poolManager;
     ILeverageController public leverageController;
     IWalletFactory public walletFactory;
@@ -37,129 +33,71 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, IUnlockCallback {
     mapping(bytes32 => CrossPoolPosition) public crossPoolPositions;
     mapping(address => bytes32[]) public userCrossPoolPositions;
     mapping(address => bool) public authorizedContracts;
-
-    // Track borrowed liquidity per pool
     mapping(PoolId => uint256) public poolBorrowedLiquidity;
     mapping(bytes32 => uint256) public positionBorrowedLiquidity;
 
-    // ============ Structs ============
     struct CrossPoolPosition {
         bytes32 positionId;
         address user;
         address userWallet;
-        PoolKey borrowPool;      // Pool A/B - where we borrow liquidity
-        PoolKey tradingPool;     // Pool A/C - where we trade for target exposure
-        address tokenA;          // User's collateral token
-        address tokenB;          // Bridge token (shared between pools)
-        address tokenC;          // Target exposure token
-        uint256 collateralAmount; // Initial Token A amount
-        uint256 borrowedLiquidity; // Liquidity borrowed from Pool A/B
-        uint256 tokenCHolding;    // Token C amount held for user
-        uint256 leverage;         // Leverage multiplier
-        uint256 openPrice;        // A/C price when position opened
+        PoolKey borrowPool;
+        PoolKey tradingPool;
+        address tokenA;
+        address tokenB;
+        address tokenC;
+        uint256 collateralAmount;
+        uint256 borrowedLiquidity;
+        uint256 tokenCHolding;
+        uint256 leverage;
+        uint256 openPrice;
         uint256 openTimestamp;
         bool isActive;
     }
 
-    // ============ Events ============
-    event CrossPoolPositionOpened(
-        bytes32 indexed positionId,
-        address indexed user,
-        uint256 collateralAmount,
-        uint256 leverage,
-        uint256 tokenCReceived
-    );
+    event CrossPoolPositionOpened(bytes32 indexed positionId, address indexed user, uint256 leverage, uint256 tokenCReceived);
+    event CrossPoolPositionClosed(bytes32 indexed positionId, address indexed user, uint256 finalValue);
+    event LiquidityBorrowed(bytes32 indexed positionId, PoolId indexed poolId, uint256 liquidityAmount);
+    event LiquidityRepaid(bytes32 indexed positionId, PoolId indexed poolId, uint256 liquidityAmount);
 
-    event CrossPoolPositionClosed(
-        bytes32 indexed positionId,
-        address indexed user,
-        uint256 finalValue,
-        int256 pnl
-    );
-
-    event LiquidityBorrowed(
-        bytes32 indexed positionId,
-        PoolId indexed poolId,
-        uint256 liquidityAmount,
-        uint256 tokenBReceived
-    );
-
-    event LiquidityRepaid(
-        bytes32 indexed positionId,
-        PoolId indexed poolId,
-        uint256 liquidityAmount,
-        uint256 tokenBUsed
-    );
-
-    // ============ Modifiers ============
     modifier onlyAuthorized() {
         require(
-            authorizedContracts[msg.sender] ||
-            msg.sender == address(leverageController) ||
-            msg.sender == owner(),
-            "AssetManager: Unauthorized"
+            authorizedContracts[msg.sender] || msg.sender == address(leverageController) || msg.sender == owner(),
+            "Unauthorized"
         );
         _;
     }
 
     modifier validPosition(bytes32 positionId) {
-        require(crossPoolPositions[positionId].isActive, "AssetManager: Invalid position");
+        require(crossPoolPositions[positionId].isActive, "Invalid position");
         _;
     }
 
-    // ============ Constructor ============
-    constructor(
-        IPoolManager _poolManager,
-        address _leverageController
-    ) Ownable(msg.sender) {
+    constructor(IPoolManager _poolManager, address _leverageController) Ownable(msg.sender) {
         poolManager = _poolManager;
         leverageController = ILeverageController(_leverageController);
         walletFactory = LeverageController(_leverageController).walletFactory();
         authorizedContracts[_leverageController] = true;
     }
 
-    // ============ Core Functions ============
-
-    /**
-     * @notice Execute cross-pool leverage trade
-     * @param params Cross-pool trade parameters
-     */
     function executeCrossPoolTrade(
         ICrossPoolAssetManager.CrossPoolTradeParams memory params
     ) external onlyAuthorized nonReentrant returns (bytes32 positionId) {
         require(params.leverage >= 2 && params.leverage <= 10, "Invalid leverage");
         require(params.collateralAmount > 0, "Invalid collateral");
+        require(params.tokenA != address(0) && params.tokenB != address(0) && params.tokenC != address(0), "Invalid tokens");
+        require(params.user != address(0) && params.userWallet != address(0), "Invalid addresses");
 
-        // Generate position ID
-        positionId = keccak256(abi.encodePacked(
-            params.user,
-            params.tokenA,
-            params.tokenC,
-            block.timestamp,
-            block.number
-        ));
-
-        // Step 1: Transfer collateral from user to AssetManager
-        // User must approve AssetManager for the collateral amount before calling this function
+        positionId = keccak256(abi.encodePacked(params.user, params.tokenA, params.tokenC, block.timestamp, block.number));
         IERC20(params.tokenA).safeTransferFrom(params.user, address(this), params.collateralAmount);
 
-        // Step 2: Calculate borrowing amounts
         uint256 leverageAmount = params.collateralAmount * (params.leverage - 1);
-        uint256 totalTokenA = params.collateralAmount + leverageAmount;
+        require(leverageAmount <= MAX_INT128, "Borrow amount too large");
+        uint256 borrowedTokens = _borrowLiquidityFromPool(params.borrowPool, leverageAmount);
+        uint256 totalTokenA = params.collateralAmount + borrowedTokens;
 
-        // Step 3: Borrow liquidity from Pool A/B to get additional Token A
-        uint256 borrowedLiquidity = _borrowLiquidityFromPool(params.borrowPool, leverageAmount);
-
-        // Step 4: Trade all Token A → Token C in Pool A/C
-        uint256 tokenCReceived = _executeSwap(
-            params.tradingPool,
-            params.tokenA,
-            params.tokenC,
-            totalTokenA
-        );
+        uint256 tokenCReceived = _executeSwap(params.tradingPool, params.tokenA, params.tokenC, totalTokenA);
         require(tokenCReceived >= params.minTokenCAmount, "Insufficient output");
 
-        // Step 5: Store position
         CrossPoolPosition memory position = CrossPoolPosition({
             positionId: positionId,
             user: params.user,
@@ -170,7 +108,7 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, IUnlockCallback {
             tokenB: params.tokenB,
             tokenC: params.tokenC,
             collateralAmount: params.collateralAmount,
-            borrowedLiquidity: borrowedLiquidity,
+            borrowedLiquidity: borrowedTokens,
             tokenCHolding: tokenCReceived,
             leverage: params.leverage,
             openPrice: _getPoolPrice(params.tradingPool),
@@ -180,209 +118,108 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, IUnlockCallback {
 
         crossPoolPositions[positionId] = position;
         userCrossPoolPositions[params.user].push(positionId);
-        positionBorrowedLiquidity[positionId] = borrowedLiquidity;
+        positionBorrowedLiquidity[positionId] = borrowedTokens;
 
-        emit CrossPoolPositionOpened(
-            positionId,
-            params.user,
-            params.collateralAmount,
-            params.leverage,
-            tokenCReceived
-        );
-
+        emit CrossPoolPositionOpened(positionId, params.user, params.leverage, tokenCReceived);
         return positionId;
     }
 
-    /**
-     * @notice Close cross-pool position
-     */
     function closeCrossPoolPosition(
         bytes32 positionId
     ) external onlyAuthorized validPosition(positionId) nonReentrant returns (uint256 userProceeds) {
         CrossPoolPosition storage position = crossPoolPositions[positionId];
+        uint256 tokenAReceived = _executeSwap(position.tradingPool, position.tokenC, position.tokenA, position.tokenCHolding);
 
-        // Step 1: Trade Token C → Token A in Pool A/C
-        uint256 tokenAReceived = _executeSwap(
-            position.tradingPool,
-            position.tokenC,
-            position.tokenA,
-            position.tokenCHolding
-        );
-
-        // Step 2: Calculate repayment needed
         uint256 leverageAmount = position.collateralAmount * (position.leverage - 1);
-        uint256 repaymentFee = (leverageAmount * 300) / 10000; // 3% fee
+        uint256 repaymentFee = (leverageAmount * 300) / 10000;
         uint256 totalRepayment = leverageAmount + repaymentFee;
-
         require(tokenAReceived >= totalRepayment, "Insufficient funds for repayment");
 
-        // Step 3: Repay liquidity to Pool A/B
         _repayLiquidityToPool(position.borrowPool, position.borrowedLiquidity, totalRepayment);
-
-        // Step 4: Calculate user proceeds
         userProceeds = tokenAReceived - totalRepayment;
 
-        // Step 5: Transfer proceeds to user wallet
         if (userProceeds > 0) {
             IERC20(position.tokenA).safeTransfer(position.userWallet, userProceeds);
         }
 
-        // Step 6: Calculate P&L and clean up
-        int256 pnl = int256(userProceeds) - int256(position.collateralAmount);
         position.isActive = false;
         delete positionBorrowedLiquidity[positionId];
-
-        emit CrossPoolPositionClosed(positionId, position.user, userProceeds, pnl);
-
+        emit CrossPoolPositionClosed(positionId, position.user, userProceeds);
         return userProceeds;
     }
 
-    // ============ Internal Pool Functions ============
-
-    /**
-     * @notice Simulate borrowing by swapping collateral for additional tokens
-     */
-    function _borrowLiquidityFromPool(
-        PoolKey memory poolKey,
-        uint256 tokenAmount
-    ) internal returns (uint256 liquidityBorrowed) {
-        // Since we're having issues with modifyLiquidity, let's simulate borrowing
-        // by doing a swap to get additional Token B, then immediately swap back to Token A
-        // This creates a "flash loan" effect where we get more Token A to trade
-
-        // For now, just return the token amount as if we borrowed that much
-        // In a real implementation, this would involve more complex logic
-        liquidityBorrowed = tokenAmount;
-
+    function _borrowLiquidityFromPool(PoolKey memory poolKey, uint256 tokenAmount) internal returns (uint256 liquidityBorrowed) {
         PoolId poolId = poolKey.toId();
+        uint128 availableLiquidity = poolManager.getLiquidity(poolId);
+        uint256 liquidityToRemove = availableLiquidity > 0 ? uint256(availableLiquidity) / 1000 : 1;
+        if (tokenAmount < 1e18) {
+            liquidityToRemove = (liquidityToRemove * tokenAmount) / 1e6;
+        }
+        if (liquidityToRemove < 1000) {
+            liquidityToRemove = 1000;
+        }
+        if (liquidityToRemove > uint256(availableLiquidity) / 20) {
+            liquidityToRemove = uint256(availableLiquidity) / 20;
+        }
+
+        ModifyLiquidityParams memory params = ModifyLiquidityParams({
+            tickLower: -887220,
+            tickUpper: 887220,
+            liquidityDelta: -int256(liquidityToRemove),
+            salt: 0
+        });
+
+        bytes memory callData = abi.encodeWithSelector(this._unlockModifyLiquidity.selector, poolKey, params);
+        bytes memory result = poolManager.unlock(callData);
+        (BalanceDelta callerDelta,) = abi.decode(result, (BalanceDelta, BalanceDelta));
+
+        address tokenA = Currency.unwrap(poolKey.currency0);
+        address tokenB = Currency.unwrap(poolKey.currency1);
+        liquidityBorrowed = tokenA < tokenB ?
+            (callerDelta.amount0() < 0 ? uint256(-int256(callerDelta.amount0())) : uint256(int256(callerDelta.amount0()))) :
+            (callerDelta.amount1() < 0 ? uint256(-int256(callerDelta.amount1())) : uint256(int256(callerDelta.amount1())));
+
         poolBorrowedLiquidity[poolId] += liquidityBorrowed;
-
-        emit LiquidityBorrowed(bytes32(0), poolId, liquidityBorrowed, tokenAmount);
-
+        emit LiquidityBorrowed(bytes32(0), poolId, liquidityBorrowed);
         return liquidityBorrowed;
     }
 
-    /**
-     * @notice Simulate repaying borrowed liquidity
-     */
-    function _repayLiquidityToPool(
-        PoolKey memory poolKey,
-        uint256 liquidityAmount,
-        uint256 tokenAmount
-    ) internal {
+    function _repayLiquidityToPool(PoolKey memory poolKey, uint256 liquidityAmount, uint256 tokenAmount) internal {
         PoolId poolId = poolKey.toId();
-
-        // Update tracking - simulate repayment
         if (poolBorrowedLiquidity[poolId] >= liquidityAmount) {
             poolBorrowedLiquidity[poolId] -= liquidityAmount;
         } else {
             poolBorrowedLiquidity[poolId] = 0;
         }
-
-        emit LiquidityRepaid(bytes32(0), poolId, liquidityAmount, tokenAmount);
+        emit LiquidityRepaid(bytes32(0), poolId, liquidityAmount);
     }
 
-    /**
-     * @notice Execute swap between tokens
-     */
-    function _executeSwap(
-        PoolKey memory poolKey,
-        address tokenIn,
-        address tokenOut,
-        uint256 amountIn
-    ) internal returns (uint256 amountOut) {
-        // Approve tokens for PoolManager
-        IERC20(tokenIn).approve(address(poolManager), amountIn);
+    function _executeSwap(PoolKey memory poolKey, address tokenIn, address tokenOut, uint256 amountIn) internal returns (uint256 amountOut) {
+        require(amountIn > 0 && amountIn <= MAX_INT128, "Invalid input amount");
+        require(IERC20(tokenIn).balanceOf(address(this)) >= amountIn, "Insufficient token balance");
+        require(IERC20(tokenIn).approve(address(poolManager), amountIn), "Approval failed");
 
-        // Determine swap direction
         bool zeroForOne = tokenIn < tokenOut;
-
         SwapParams memory swapParams = SwapParams({
             zeroForOne: zeroForOne,
-            amountSpecified: -int256(amountIn), // Exact input
+            amountSpecified: -int256(amountIn),
             sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
         });
 
-        // Execute swap using unlock
-        bytes memory callData = abi.encodeWithSelector(
-            this._unlockSwap.selector,
-            poolKey,
-            swapParams
-        );
-
+        bytes memory callData = abi.encodeWithSelector(this._unlockSwap.selector, poolKey, swapParams);
         bytes memory result = poolManager.unlock(callData);
         BalanceDelta delta = abi.decode(result, (BalanceDelta));
 
-        // Extract output amount
-        int128 amount0 = delta.amount0();
-        int128 amount1 = delta.amount1();
-
-        if (zeroForOne) {
-            // token0 → token1
-            amountOut = amount1 > 0 ? uint256(uint128(amount1)) : 0;
-        } else {
-            // token1 → token0
-            amountOut = amount0 > 0 ? uint256(uint128(amount0)) : 0;
-        }
-
-        return amountOut;
+        amountOut = zeroForOne ?
+            (delta.amount1() < 0 ? uint256(-int256(delta.amount1())) : uint256(int256(delta.amount1()))) :
+            (delta.amount0() < 0 ? uint256(-int256(delta.amount0())) : uint256(int256(delta.amount0())));
+        require(amountOut > 0, "Zero output amount");
     }
 
-    /**
-     * @notice Get pool price
-     */
     function _getPoolPrice(PoolKey memory poolKey) internal view returns (uint256) {
-        PoolId poolId = poolKey.toId();
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
-
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
         require(sqrtPriceX96 > 0, "Invalid pool price");
-
-        // Convert sqrtPriceX96 to price with 18 decimals
-        uint256 price = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96) * 1e18) >> 192;
-        return price > 0 ? price : 1;
-    }
-
-    // ============ View Functions ============
-
-    function getCrossPoolPositionHealth(
-        bytes32 positionId
-    ) external view validPosition(positionId) returns (
-        uint256 currentValue,
-        uint256 liquidationThreshold,
-        bool isHealthy,
-        int256 pnl
-    ) {
-        CrossPoolPosition memory position = crossPoolPositions[positionId];
-
-        // Get current price from Pool A/C
-        uint256 currentPrice = _getPoolPrice(position.tradingPool);
-
-        // Calculate current value of Token C holdings in Token A terms
-        currentValue = (position.tokenCHolding * currentPrice) / 1e18;
-
-        // Calculate liquidation threshold
-        uint256 leverageAmount = position.collateralAmount * (position.leverage - 1);
-        uint256 debt = leverageAmount + ((leverageAmount * 300) / 10000); // Including 3% fee
-        liquidationThreshold = (debt * 110) / 100; // 110% of debt
-
-        isHealthy = currentValue > liquidationThreshold;
-
-        // Calculate P&L
-        pnl = int256(currentValue) - int256(position.collateralAmount);
-    }
-
-    function getUserCrossPoolPositions(address user) external view returns (bytes32[] memory) {
-        return userCrossPoolPositions[user];
-    }
-
-    function getCrossPoolPosition(bytes32 positionId) external view returns (CrossPoolPosition memory) {
-        return crossPoolPositions[positionId];
-    }
-
-    // ============ Admin Functions ============
-
-    function authorizeContract(address contractAddr, bool authorized) external onlyOwner {
-        authorizedContracts[contractAddr] = authorized;
+        return (uint256(sqrtPriceX96) * uint256(sqrtPriceX96) * 1e18) >> 192;
     }
 
     function setLeverageController(address _leverageController) external onlyOwner {
@@ -390,38 +227,69 @@ contract AssetManagerFixed is ReentrancyGuard, Ownable, IUnlockCallback {
         authorizedContracts[_leverageController] = true;
     }
 
-    // ============ Unlock Callback ============
-
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
-        require(msg.sender == address(poolManager), "Only PoolManager can call");
-
+        require(msg.sender == address(poolManager), "Only PoolManager");
         (bool success, bytes memory result) = address(this).call(data);
         require(success, "Unlock callback failed");
-
         return result;
     }
 
-    function _unlockModifyLiquidity(
-        PoolKey memory poolKey,
-        ModifyLiquidityParams memory params
-    ) external returns (BalanceDelta) {
-        require(msg.sender == address(this), "Only self can call");
-        (BalanceDelta delta,) = poolManager.modifyLiquidity(poolKey, params, "");
+    function _unlockModifyLiquidity(PoolKey memory poolKey, ModifyLiquidityParams memory params) external returns (BalanceDelta, BalanceDelta) {
+        require(msg.sender == address(this), "Only self");
+        (BalanceDelta callerDelta, BalanceDelta feesAccrued) = poolManager.modifyLiquidity(poolKey, params, "");
+        
+        if (callerDelta.amount0() < 0) {
+            address token0 = Currency.unwrap(poolKey.currency0);
+            uint256 owed = uint256(uint128(-callerDelta.amount0()));
+            require(IERC20(token0).balanceOf(address(this)) >= owed, "Insufficient token0");
+            poolManager.sync(poolKey.currency0);
+            IERC20(token0).transfer(address(poolManager), owed);
+            poolManager.settle();
+        } else if (callerDelta.amount0() > 0) {
+            poolManager.take(poolKey.currency0, address(this), uint256(uint128(callerDelta.amount0())));
+        }
+
+        if (callerDelta.amount1() < 0) {
+            address token1 = Currency.unwrap(poolKey.currency1);
+            uint256 owed = uint256(uint128(-callerDelta.amount1()));
+            require(IERC20(token1).balanceOf(address(this)) >= owed, "Insufficient token1");
+            poolManager.sync(poolKey.currency1);
+            IERC20(token1).transfer(address(poolManager), owed);
+            poolManager.settle();
+        } else if (callerDelta.amount1() > 0) {
+            poolManager.take(poolKey.currency1, address(this), uint256(uint128(callerDelta.amount1())));
+        }
+
+        return (callerDelta, feesAccrued);
+    }
+
+    function _unlockSwap(PoolKey memory poolKey, SwapParams memory params) external returns (BalanceDelta) {
+        require(msg.sender == address(this), "Only self");
+        BalanceDelta delta = poolManager.swap(poolKey, params, "");
+
+        if (delta.amount0() < 0) {
+            address token0 = Currency.unwrap(poolKey.currency0);
+            uint256 owed = uint256(uint128(-delta.amount0()));
+            require(IERC20(token0).balanceOf(address(this)) >= owed, "Insufficient token0");
+            poolManager.sync(poolKey.currency0);
+            IERC20(token0).transfer(address(poolManager), owed);
+            poolManager.settle();
+        } else if (delta.amount0() > 0) {
+            poolManager.take(poolKey.currency0, address(this), uint256(uint128(delta.amount0())));
+        }
+
+        if (delta.amount1() < 0) {
+            address token1 = Currency.unwrap(poolKey.currency1);
+            uint256 owed = uint256(uint128(-delta.amount1()));
+            require(IERC20(token1).balanceOf(address(this)) >= owed, "Insufficient token1");
+            poolManager.sync(poolKey.currency1);
+            IERC20(token1).transfer(address(poolManager), owed);
+            poolManager.settle();
+        } else if (delta.amount1() > 0) {
+            poolManager.take(poolKey.currency1, address(this), uint256(uint128(delta.amount1())));
+        }
+
         return delta;
-    }
-
-    function _unlockSwap(
-        PoolKey memory poolKey,
-        SwapParams memory params
-    ) external returns (BalanceDelta) {
-        require(msg.sender == address(this), "Only self can call");
-        return poolManager.swap(poolKey, params, "");
-    }
-
-    // ============ Emergency Functions ============
-
-    function emergencyWithdraw(address token, uint256 amount) external onlyOwner {
-        IERC20(token).safeTransfer(owner(), amount);
     }
 
     receive() external payable {}

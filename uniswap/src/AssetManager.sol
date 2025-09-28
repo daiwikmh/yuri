@@ -10,7 +10,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import "./ILeverageInterfaces.sol";
+import "./ILeverageInterfaces.sol"; // Assumes this defines ICrossPoolAssetManager, ILeverageController, IInstantLeverageHook
+import {Script} from "forge-std/Script.sol";
+import {console} from "forge-std/console.sol";
+
 
 /**
  * @title AssetManager
@@ -19,6 +22,7 @@ import "./ILeverageInterfaces.sol";
  */
 contract AssetManager is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
+    uint256 private constant MAX_INT128 = 170141183460469231731687303715884105727; // Maximum value of int128
 
     // ============ State Variables ============
     IPoolManager public immutable poolManager;
@@ -115,6 +119,8 @@ contract AssetManager is ReentrancyGuard, Ownable {
     ) external onlyAuthorized nonReentrant returns (bytes32 positionId) {
         require(params.leverage >= 2 && params.leverage <= 10, "AssetManager: Invalid leverage");
         require(params.collateralAmount > 0, "AssetManager: Invalid collateral");
+        require(params.tokenA != address(0) && params.tokenB != address(0) && params.tokenC != address(0), "AssetManager: Invalid tokens");
+        require(params.user != address(0) && params.userWallet != address(0), "AssetManager: Invalid addresses");
 
         // Generate position ID
         positionId = keccak256(abi.encodePacked(
@@ -127,6 +133,9 @@ contract AssetManager is ReentrancyGuard, Ownable {
 
         // Step 1: Borrow Token B from Pool A/B via LeverageHook
         uint256 borrowAmount = params.collateralAmount * (params.leverage - 1);
+require(borrowAmount <= MAX_INT128, "AssetManager: Borrow amount too large");
+
+
         uint256 totalTokenB = _borrowFromPoolAB(params.borrowPool, params.tokenB, borrowAmount);
 
         // Step 2: Convert user's Token A to Token B (if needed)
@@ -249,8 +258,11 @@ contract AssetManager is ReentrancyGuard, Ownable {
         address tokenB,
         uint256 amount
     ) internal returns (uint256 borrowed) {
-        // Call LeverageHook to borrow from Pool A/B
-        return leverageHook.borrowFromPool(poolKey, tokenB, amount);
+        require(amount > 0, "AssetManager: Zero borrow amount");
+        borrowed = leverageHook.borrowFromPool(poolKey, tokenB, amount);
+        console.log("Borrowed %s of token %s from pool", borrowed, tokenB);
+        require(borrowed > 0, "AssetManager: Borrow failed");
+        return borrowed;
     }
 
     function _repayToPoolAB(
@@ -258,9 +270,10 @@ contract AssetManager is ReentrancyGuard, Ownable {
         address tokenB,
         uint256 amount
     ) internal {
-        // Approve and repay to Pool A/B via LeverageHook
+        require(amount > 0, "AssetManager: Zero repay amount");
         IERC20(tokenB).approve(address(leverageHook), amount);
         leverageHook.repayToPool(poolKey, tokenB, amount);
+        console.log("Repaid %s of token %s to pool", amount, tokenB);
     }
 
     function _convertTokenAToB(
@@ -304,31 +317,39 @@ contract AssetManager is ReentrancyGuard, Ownable {
         address tokenOut,
         uint256 amountIn
     ) internal returns (uint256 amountOut) {
-        // Approve tokens for PoolManager
-        IERC20(tokenIn).approve(address(poolManager), amountIn);
+        require(amountIn > 0, "AssetManager: Zero input amount");
+require(amountIn <= MAX_INT128, "AssetManager: Amount too large");       
+ console.log("Executing swap: %s -> %s, amountIn: %s", tokenIn, tokenOut, amountIn);
+        console.log("PoolKey currency0: %s, currency1: %s", Currency.unwrap(poolKey.currency0), Currency.unwrap(poolKey.currency1));
 
-        // Execute swap
+        uint256 balanceBefore = IERC20(tokenIn).balanceOf(address(this));
+        console.log("TokenIn balance before: %s", balanceBefore);
+        require(balanceBefore >= amountIn, "AssetManager: Insufficient token balance");
+        require(IERC20(tokenIn).approve(address(poolManager), amountIn), "AssetManager: Approval failed");
+
         SwapParams memory swapParams = SwapParams({
             zeroForOne: tokenIn < tokenOut,
             amountSpecified: -int256(amountIn), // Exact input
             sqrtPriceLimitX96: 0
         });
 
-        BalanceDelta delta = poolManager.swap(poolKey, swapParams, "");
+        try poolManager.swap(poolKey, swapParams, "") returns (BalanceDelta delta) {
+            int128 amount0 = delta.amount0();
+            int128 amount1 = delta.amount1();
 
-        // Extract output amount
-        int128 amount0 = delta.amount0();
-        int128 amount1 = delta.amount1();
-        amountOut = tokenIn < tokenOut ?
-            (amount1 > 0 ? uint256(uint128(amount1)) : 0) :
-            (amount0 > 0 ? uint256(uint128(amount0)) : 0);
-
-        emit AssetsTransferred(bytes32(0), tokenOut, amountOut, "swap_received");
+            amountOut = tokenIn < tokenOut ?
+                (amount1 > 0 ? uint256(uint128(amount1)) : 0) :
+                (amount0 > 0 ? uint256(uint128(amount0)) : 0);
+            require(amountOut > 0, "AssetManager: Zero output amount");
+            emit AssetsTransferred(bytes32(0), tokenOut, amountOut, "swap_received");
+        } catch Error(string memory reason) {
+            console.log("Swap failed: %s", reason);
+            revert(string(abi.encodePacked("AssetManager: Swap failed - ", reason)));
+        }
         return amountOut;
     }
 
     function _getPoolPrice(PoolKey memory poolKey) internal view returns (uint256) {
-        // Get pool price using the same logic as InstantLeverageHook
         return leverageHook.getPoolPrice(poolKey);
     }
 
@@ -337,7 +358,6 @@ contract AssetManager is ReentrancyGuard, Ownable {
         address tokenB,
         uint256 tokenBAmount
     ) internal view returns (uint256) {
-        // Estimate Token A value without executing trade
         uint256 poolPrice = _getPoolPrice(poolKey);
         return (tokenBAmount * poolPrice) / 1e18;
     }
@@ -372,7 +392,6 @@ contract AssetManager is ReentrancyGuard, Ownable {
         return crossPoolPositions[positionId];
     }
 
-    // For compatibility with interface
     function getCrossPoolPositionInterface(bytes32 positionId) external view returns (ICrossPoolAssetManager.CrossPoolPosition memory) {
         CrossPoolPosition memory pos = crossPoolPositions[positionId];
         return ICrossPoolAssetManager.CrossPoolPosition({
