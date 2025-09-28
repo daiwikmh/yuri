@@ -43,7 +43,6 @@ contract InstantLeverageHook is BaseHook, Ownable, ReentrancyGuard {
     mapping(address => bytes32[]) public userPositions;
     mapping(bytes32 => uint256) public outputTokenHoldings;
 
-    // Pool lending info
     struct PoolInfo {
         uint256 totalLent;
         uint256 maxLendingLimit;

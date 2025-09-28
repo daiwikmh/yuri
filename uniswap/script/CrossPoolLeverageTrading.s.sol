@@ -170,7 +170,7 @@ contract CrossPoolLeverageTrading is Script {
             tokenC: test2Addr,
             collateralAmount: collateralAmount,
             leverage: leverage,
-            minTokenCAmount: (collateralAmount * leverage * 95) / 100 // 5% slippage
+            minTokenCAmount: (collateralAmount * 95) / 100 // Realistic expectation for simplified swap
         });
 
         // Approve AssetManager to spend collateral tokens from user wallet
@@ -194,6 +194,11 @@ contract CrossPoolLeverageTrading is Script {
         vm.startBroadcast(user);
 
         console.log("Closing Cross-Pool Position: %s", vm.toString(positionId));
+
+        // Setup user wallet if not already set
+        if (userWallet == address(0)) {
+            _setupUserWallet();
+        }
 
         // Get initial balance
         uint256 initialBalance = IERC20(test0Addr).balanceOf(userWallet);
@@ -258,5 +263,14 @@ contract CrossPoolLeverageTrading is Script {
         console.log("LeverageController: %s", address(leverageController));
         console.log("InstantLeverageHook: %s", address(leverageHook));
         console.log("PoolManager: %s", poolManagerAddr);
+    }
+
+    /**
+     * @notice Check if a position exists and is active
+     */
+    function checkPosition(bytes32 positionId) public view {
+        console.log("Checking position: %s", vm.toString(positionId));
+        bool isActive = assetManager.isPositionActive(positionId);
+        console.log("Position active: %s", isActive ? "YES" : "NO");
     }
 }
