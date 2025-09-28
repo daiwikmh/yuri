@@ -134,6 +134,49 @@ contract InstantLeverageHook is BaseHook, Ownable, ReentrancyGuard {
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
+    /**
+     * @notice Hook called before removing liquidity - allows cross-pool leverage borrowing
+     */
+    function _beforeRemoveLiquidity(
+        address sender,
+        PoolKey calldata key,
+        ModifyLiquidityParams calldata params,
+        bytes calldata hookData
+    ) internal virtual override returns (bytes4) {
+        // Allow removal of liquidity for cross-pool leverage operations
+        // This is called by AssetManager when borrowing liquidity
+        return BaseHook.beforeRemoveLiquidity.selector;
+    }
+
+    /**
+     * @notice Hook called after swap completion
+     */
+    function _afterSwap(
+        address sender,
+        PoolKey calldata key,
+        SwapParams calldata params,
+        BalanceDelta delta,
+        bytes calldata hookData
+    ) internal virtual override returns (bytes4, int128) {
+        // Handle post-swap logic for leverage trades
+        return (BaseHook.afterSwap.selector, 0);
+    }
+
+    /**
+     * @notice Hook called after removing liquidity
+     */
+    function _afterRemoveLiquidity(
+        address sender,
+        PoolKey calldata key,
+        ModifyLiquidityParams calldata params,
+        BalanceDelta delta,
+        BalanceDelta feesAccrued,
+        bytes calldata hookData
+    ) internal virtual override returns (bytes4, BalanceDelta) {
+        // Handle post-liquidity removal for cross-pool leverage
+        return (BaseHook.afterRemoveLiquidity.selector, delta);
+    }
+
     // ============ Core Leverage Functions ============
 
     /**

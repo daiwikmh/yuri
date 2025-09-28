@@ -9,7 +9,7 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 
 // Import our contracts
-import "../src/AssetManager.sol";
+import "../src/AssetManagerFixed.sol";
 import "../src/LeverageController.sol";
 import "../src/InstantLeverageHook.sol";
 
@@ -18,25 +18,30 @@ import "../src/InstantLeverageHook.sol";
  * @notice Deploys AssetManager for cross-pool leverage trading
  */
 contract DeployAssetManager is Script {
-    // Existing deployed contract addresses
-    address constant LEVERAGE_CONTROLLER = 0x725212999a45ABCb651A84b96C70438C6c1d7c43;
-    address constant INSTANT_LEVERAGE_HOOK = 0x3143D8279c90DdFAe5A034874C5d232AF88b03c0;
-    address constant POOL_MANAGER = 0x00B036B58a818B1BC34d502D3fE730Db729e62AC;
+    // Load addresses from environment
+    address leverageControllerAddr;
+    address instantLeverageHookAddr;
+    address poolManagerAddr;
 
     
-    AssetManager public assetManager;
+    AssetManagerFixed public assetManager;
     LeverageController public leverageController;
     InstantLeverageHook public leverageHook;
 
     function setUp() public {
+        // Load addresses from environment
+        leverageControllerAddr = vm.envAddress("LEVERAGE_CONTROLLER_ADDRESS");
+        instantLeverageHookAddr = vm.envAddress("INSTANT_LEVERAGE_HOOK_ADDRESS");
+        poolManagerAddr = vm.envAddress("POOL_MANAGER_ADDRESS");
+
         // Connect to existing contracts
-        leverageController = LeverageController(LEVERAGE_CONTROLLER);
-        leverageHook = InstantLeverageHook(INSTANT_LEVERAGE_HOOK);
+        leverageController = LeverageController(leverageControllerAddr);
+        leverageHook = InstantLeverageHook(instantLeverageHookAddr);
 
         console.log("=== AssetManager Deployment Setup ===");
         console.log("LeverageController:", address(leverageController));
         console.log("InstantLeverageHook:", address(leverageHook));
-        console.log("PoolManager:", POOL_MANAGER);
+        console.log("PoolManager:", poolManagerAddr);
     }
 
     function run() public {
@@ -46,18 +51,20 @@ contract DeployAssetManager is Script {
         console.log("=== Deploying AssetManager ===");
         console.log("Deployer:", deployer);
 
-        // Deploy AssetManager
-        console.log("1. Deploying AssetManager...");
-        assetManager = new AssetManager(
-            IPoolManager(POOL_MANAGER),
-            address(leverageController),
-            address(leverageHook)
+        // Deploy AssetManagerFixed
+        console.log("1. Deploying AssetManagerFixed...");
+        assetManager = new AssetManagerFixed(
+            IPoolManager(poolManagerAddr),
+            leverageControllerAddr
         );
         console.log("   AssetManager deployed at:", address(assetManager));
 
         // Setup permissions
         console.log("2. Setting up permissions...");
 
+        // Authorize AssetManager in LeverageController
+        leverageController.authorizePlatform(address(assetManager));
+        console.log("   AssetManager authorized in LeverageController");
 
         vm.stopBroadcast();
 
@@ -71,7 +78,7 @@ contract DeployAssetManager is Script {
         console.log("AssetManager:", address(assetManager));
         console.log("LeverageController:", address(leverageController));
         console.log("InstantLeverageHook:", address(leverageHook));
-        console.log("PoolManager:", POOL_MANAGER);
+        console.log("PoolManager:", poolManagerAddr);
         console.log("==========================================");
         console.log(" Cross-Pool Leverage System Ready!");
         console.log("");
@@ -90,6 +97,6 @@ contract DeployAssetManager is Script {
         console.log("ASSET_MANAGER_ADDRESS=", vm.toString(address(assetManager)));
         console.log("LEVERAGE_CONTROLLER_ADDRESS=", vm.toString(address(leverageController)));
         console.log("INSTANT_LEVERAGE_HOOK_ADDRESS=", vm.toString(address(leverageHook)));
-        console.log("POOL_MANAGER_ADDRESS=", vm.toString(POOL_MANAGER));
+        console.log("POOL_MANAGER_ADDRESS=", vm.toString(poolManagerAddr));
     }
 }

@@ -17,8 +17,8 @@ import {InstantLeverageHook} from "../src/InstantLeverageHook.sol";
  * @notice Configures pools for leverage trading after initial deployment
  */
 contract ConfigurePools is Script {
-    address constant TEST0 = 0x559bAE05FA917Ffa3EB895672127430207958Cc4;
-    address constant TEST1 = 0xDd163e12F63f756FF89745Eb0572b0bfCeF987AF;
+    address test0Addr;
+    address test1Addr;
 
     LeverageController public leverageController;
     InstantLeverageHook public leverageHook;
@@ -28,6 +28,8 @@ contract ConfigurePools is Script {
         // Load deployed addresses from environment
         leverageController = LeverageController(vm.envAddress("LEVERAGE_CONTROLLER_ADDRESS"));
         leverageHook = InstantLeverageHook(vm.envAddress("INSTANT_LEVERAGE_HOOK_ADDRESS"));
+        test0Addr = vm.envAddress("TEST0_ADDRESS");
+        test1Addr = vm.envAddress("TEST1_ADDRESS");
         poolManager = IPoolManager(vm.envAddress("POOL_MANAGER_ADDRESS"));
 
         console.log("=== Pool Configuration Setup ===");
@@ -44,8 +46,8 @@ contract ConfigurePools is Script {
 
         // Example pool configuration for TEST0/TEST1
         PoolKey memory testPool = PoolKey({
-            currency0: Currency.wrap(TEST0),
-            currency1: Currency.wrap(TEST1),
+            currency0: Currency.wrap(test0Addr),
+            currency1: Currency.wrap(test1Addr),
             fee: 3000, // 0.3% fee
             tickSpacing: 60,
             hooks: IHooks(address(leverageHook))
@@ -71,7 +73,7 @@ contract ConfigurePools is Script {
         // Optional: Configure ETH/TEST0 pool if needed
         PoolKey memory ethPool = PoolKey({
             currency0: Currency.wrap(address(0)), // ETH
-            currency1: Currency.wrap(TEST0),
+            currency1: Currency.wrap(test0Addr),
             fee: 3000,
             tickSpacing: 60,
             hooks: IHooks(address(leverageHook))

@@ -3,7 +3,12 @@
     "allow": [
       "Bash(find:*)",
       "Bash(grep:*)",
-      "WebFetch(domain:docs.uniswap.org)"
+      "WebFetch(domain:docs.uniswap.org)",
+      "Bash(make deploy-asset-manager:*)",
+      "Bash(make:*)",
+      "Bash(forge clean:*)",
+      "Bash(forge script:*)",
+      "Bash(cast call:*)"
     ],
     "deny": [],
     "ask": []

@@ -9,7 +9,7 @@ import {IHooks} from "v4-core/interfaces/IHooks.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 // Import our contracts
-import "../src/AssetManager.sol";
+import "../src/AssetManagerFixed.sol";
 import "../src/WalletFactory.sol";
 import "../src/LeverageController.sol";
 import "../src/InstantLeverageHook.sol";
@@ -21,18 +21,16 @@ import "forge-std/console.sol";
  * @notice Execute cross-pool leverage trades: Pool A/B (borrow) + Pool B/C (trade)
  */
 contract CrossPoolLeverageTrading is Script {
-    // Contract addresses - will be loaded from env
-    address constant LEVERAGE_CONTROLLER = 0x725212999a45ABCb651A84b96C70438C6c1d7c43;
-    address constant INSTANT_LEVERAGE_HOOK = 0x3143D8279c90DdFAe5A034874C5d232AF88b03c0;
-
-    // Token addresses
-    address constant TEST0 = 0xB08D5e594773C55b2520a646b4EB3AA5fA08aF21; // Token A
-    address constant TEST1 = 0xe3A426896Ca307c3fa4A818f2889F44582460954; // Token B
-    // TEST2 (Token C) - To be deployed
+    // Load addresses from environment
+    address leverageControllerAddr;
+    address instantLeverageHookAddr;
+    address test0Addr; // Token A
+    address test1Addr; // Token B
+    address test2Addr; // Token C
 
    
     // Contract instances
-    AssetManager public assetManager;
+    AssetManagerFixed public assetManager;
     IWalletFactory public walletFactory;
     LeverageController public leverageController;
     InstantLeverageHook public leverageHook;
@@ -43,13 +41,20 @@ contract CrossPoolLeverageTrading is Script {
     function setUp() public {
         user = vm.rememberKey(vm.envUint("PRIVATE_KEY"));
 
+        // Load addresses from environment
+        leverageControllerAddr = vm.envAddress("LEVERAGE_CONTROLLER_ADDRESS");
+        instantLeverageHookAddr = vm.envAddress("INSTANT_LEVERAGE_HOOK_ADDRESS");
+        test0Addr = vm.envAddress("TEST0_ADDRESS");
+        test1Addr = vm.envAddress("TEST1_ADDRESS");
+        test2Addr = vm.envAddress("TEST2_ADDRESS");
+
         // Connect to deployed contracts
-        leverageController = LeverageController(LEVERAGE_CONTROLLER);
-        leverageHook = InstantLeverageHook(INSTANT_LEVERAGE_HOOK);
+        leverageController = LeverageController(leverageControllerAddr);
+        leverageHook = InstantLeverageHook(instantLeverageHookAddr);
         walletFactory = leverageController.walletFactory();
 
-        // Load AssetManager - use deployed address
-        assetManager = AssetManager(payable(0x63f7F33feC7d640F05817f77C1B8C0Df03C300CE));
+        // Load AssetManagerFixed
+        assetManager = AssetManagerFixed(payable(vm.envAddress("ASSET_MANAGER_ADDRESS")));
 
         console.log("=== Cross-Pool Leverage Trading System ===");
         console.log("User:", user);
@@ -112,19 +117,30 @@ contract CrossPoolLeverageTrading is Script {
         console.log("   Leverage:", leverage, "x");
         console.log("   Strategy: A/B (borrow) + B/C (trade)");
 
-        // Create pool keys
+        // Setup user wallet if not already set
+        if (userWallet == address(0)) {
+            _setupUserWallet();
+        }
+
+        // Create pool keys with proper currency ordering
+        address token0_AB = test0Addr < test1Addr ? test0Addr : test1Addr;
+        address token1_AB = test0Addr < test1Addr ? test1Addr : test0Addr;
+
+        address token0_AC = test0Addr < test2Addr ? test0Addr : test2Addr;
+        address token1_AC = test0Addr < test2Addr ? test2Addr : test0Addr;
+
         PoolKey memory poolAB = PoolKey({
-            currency0: Currency.wrap(TEST0), // Token A
-            currency1: Currency.wrap(TEST1), // Token B
+            currency0: Currency.wrap(token0_AB),
+            currency1: Currency.wrap(token1_AB),
             fee: 3000,
             tickSpacing: 60,
             hooks: IHooks(address(leverageHook))
         });
 
-        // TODO: Create pool B/C when TEST2 is available
-        PoolKey memory poolBC = PoolKey({
-            currency0: Currency.wrap(TEST1), // Token B
-            currency1: Currency.wrap(TEST1), // Token C (placeholder)
+        // Pool A/C for trading (TEST0/TEST2)
+        PoolKey memory poolAC = PoolKey({
+            currency0: Currency.wrap(token0_AC),
+            currency1: Currency.wrap(token1_AC),
             fee: 3000,
             tickSpacing: 60,
             hooks: IHooks(address(leverageHook))
@@ -135,33 +151,23 @@ contract CrossPoolLeverageTrading is Script {
             user: user,
             userWallet: userWallet,
             borrowPool: poolAB,
-            tradingPool: poolBC,
-            tokenA: TEST0,
-            tokenB: TEST1,
-            tokenC: TEST1, // TODO: Update to TEST2
+            tradingPool: poolAC,
+            tokenA: test0Addr,
+            tokenB: test1Addr,
+            tokenC: test2Addr,
             collateralAmount: collateralAmount,
             leverage: leverage,
             minTokenCAmount: (collateralAmount * leverage * 95) / 100, // 5% slippage
             deadline: block.timestamp + 1 hours
         });
 
-        // Set delegation for AssetManager
-        uint256 deadline = block.timestamp + 1 hours;
-        bytes32 delegationHash = keccak256(abi.encode(user, collateralAmount, deadline));
+        // Skip delegation for now - test direct AssetManager functionality
+        console.log("Skipping delegation for testing...");
 
-        // Simplified signature for script testing
-        bytes memory signature = abi.encodePacked(
-            uint8(27),
-            bytes32(0x1234567890123456789012345678901234567890123456789012345678901234),
-            bytes32(0x1234567890123456789012345678901234567890123456789012345678901234)
-        );
-
-        UserWallet(payable(userWallet)).setDelegation(
-            delegationHash,
-            collateralAmount,
-            deadline,
-            signature
-        );
+        // Approve AssetManager to spend collateral tokens
+        console.log(" Approving AssetManager for collateral...");
+        IERC20(test0Addr).approve(address(assetManager), collateralAmount);
+        console.log(" Approval set for", collateralAmount / 1e18, "tokens");
 
         // Execute cross-pool trade
         positionId = assetManager.executeCrossPoolTrade(params);
@@ -179,11 +185,11 @@ contract CrossPoolLeverageTrading is Script {
         console.log("Position ID:", vm.toString(positionId));
 
         // Get position details
-        AssetManager.CrossPoolPosition memory position = assetManager.getCrossPoolPosition(positionId);
+        AssetManagerFixed.CrossPoolPosition memory position = assetManager.getCrossPoolPosition(positionId);
 
         console.log("User:", position.user);
         console.log("Collateral (Token A):", position.collateralAmount / 1e18);
-        console.log("Borrowed (Token B):", position.borrowedTokenB / 1e18);
+        console.log("Borrowed Liquidity:", position.borrowedLiquidity);
         console.log("Holding (Token C):", position.tokenCHolding / 1e18);
         console.log("Leverage:", position.leverage, "x");
         console.log("Open Price:", position.openPrice);
@@ -210,13 +216,13 @@ contract CrossPoolLeverageTrading is Script {
         console.log(" Closing Cross-Pool Position:", vm.toString(positionId));
 
         // Get initial balance
-        uint256 initialBalance = UserWallet(payable(userWallet)).balances(TEST0);
+        uint256 initialBalance = UserWallet(payable(userWallet)).balances(test0Addr);
 
         // Close position
         uint256 userProceeds = assetManager.closeCrossPoolPosition(positionId);
 
         // Check final balance
-        uint256 finalBalance = UserWallet(payable(userWallet)).balances(TEST0);
+        uint256 finalBalance = UserWallet(payable(userWallet)).balances(test0Addr);
         int256 pnl = int256(finalBalance) - int256(initialBalance);
 
         console.log(" Cross-pool position closed");
@@ -260,7 +266,7 @@ contract CrossPoolLeverageTrading is Script {
         }
 
         for (uint i = 0; i < positions.length; i++) {
-            AssetManager.CrossPoolPosition memory position = assetManager.getCrossPoolPosition(positions[i]);
+            AssetManagerFixed.CrossPoolPosition memory position = assetManager.getCrossPoolPosition(positions[i]);
             if (position.isActive) {
                 console.log("Position", i + 1, ":", vm.toString(positions[i]));
                 console.log("  - Leverage:", position.leverage, "x");
@@ -279,13 +285,13 @@ contract CrossPoolLeverageTrading is Script {
         console.log(" Depositing", amount / 1e18, "Token A for cross-pool trading...");
 
         // Check balance
-        uint256 userBalance = IERC20(TEST0).balanceOf(user);
+        uint256 userBalance = IERC20(test0Addr).balanceOf(user);
         require(userBalance >= amount, "Insufficient Token A balance");
 
         // Deposit via WalletFactory
         WalletFactory concreteFactory = WalletFactory(address(walletFactory));
-        IERC20(TEST0).approve(address(walletFactory), amount);
-        concreteFactory.depositFunds(TEST0, amount);
+        IERC20(test0Addr).approve(address(walletFactory), amount);
+        concreteFactory.depositFunds(test0Addr, amount);
 
         console.log(" Deposited successfully");
 

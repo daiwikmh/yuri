@@ -40,7 +40,7 @@ contract DeployLeverageSystem is Script {
 
         // Deploy PoolManager
         console.log("1. Deploying PoolManager...");
-        poolManager = IPoolManager(0x00B036B58a818B1BC34d502D3fE730Db729e62AC);  
+        poolManager = IPoolManager(vm.envAddress("POOL_MANAGER_ADDRESS"));  
         console.log("   PoolManager deployed at:", address(poolManager));
 
         // Deploy UserWallet template
